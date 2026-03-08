@@ -200,14 +200,72 @@ const deduplicateAgainstDb = createStep({
   },
 });
 
-const scrapeAndQualify = createStep({
-  id: "scrape-and-qualify",
-  description: "Deep scrape new firm websites then batch qualify with Dust AI in a single step",
+const scrapeFirmWebsites = createStep({
+  id: "scrape-firm-websites",
+  description: "Deep scrape new firm websites for contact info and content",
   inputSchema: z.object({
     newFirmsJson: z.string(),
     newCount: z.number(),
     existingInDb: z.number(),
     uniqueCount: z.number(),
+    totalBeforeDedup: z.number(),
+  }),
+  outputSchema: z.object({
+    scrapedFirmsJson: z.string(),
+    scrapedCount: z.number(),
+    totalCount: z.number(),
+    existingInDb: z.number(),
+    totalBeforeDedup: z.number(),
+  }),
+  execute: async ({ inputData, mastra }) => {
+    const logger = mastra?.getLogger();
+
+    if (inputData.newCount === 0) {
+      logger?.info("ℹ️ [Step 4] No new firms to scrape — all already in database");
+      return {
+        scrapedFirmsJson: "[]",
+        scrapedCount: 0,
+        totalCount: 0,
+        existingInDb: inputData.existingInDb,
+        totalBeforeDedup: inputData.totalBeforeDedup,
+      };
+    }
+
+    logger?.info(`🌐 [Step 4] Deep scraping ${inputData.newCount} NEW firm websites...`);
+    const scrapeResult = await scrapeFirmWebsitesTool.execute(
+      { firmsJson: inputData.newFirmsJson }, { mastra }
+    );
+
+    if (!("error" in scrapeResult && scrapeResult.error)) {
+      logger?.info(`✅ [Step 4] Scraped ${scrapeResult.scrapedCount}/${scrapeResult.totalCount} websites successfully`);
+      return {
+        scrapedFirmsJson: scrapeResult.firmsJson,
+        scrapedCount: scrapeResult.scrapedCount,
+        totalCount: scrapeResult.totalCount,
+        existingInDb: inputData.existingInDb,
+        totalBeforeDedup: inputData.totalBeforeDedup,
+      };
+    }
+
+    logger?.warn(`⚠️ [Step 4] Scraping error, proceeding with raw data`);
+    return {
+      scrapedFirmsJson: inputData.newFirmsJson,
+      scrapedCount: 0,
+      totalCount: inputData.newCount,
+      existingInDb: inputData.existingInDb,
+      totalBeforeDedup: inputData.totalBeforeDedup,
+    };
+  },
+});
+
+const qualifyWithDustAI = createStep({
+  id: "qualify-with-dust-ai",
+  description: "Batch qualify scraped firms with Dust AI agent",
+  inputSchema: z.object({
+    scrapedFirmsJson: z.string(),
+    scrapedCount: z.number(),
+    totalCount: z.number(),
+    existingInDb: z.number(),
     totalBeforeDedup: z.number(),
   }),
   outputSchema: z.object({
@@ -220,8 +278,8 @@ const scrapeAndQualify = createStep({
   execute: async ({ inputData, mastra }) => {
     const logger = mastra?.getLogger();
 
-    if (inputData.newCount === 0) {
-      logger?.info("ℹ️ [Step 4+5] No new firms to process — all already in database");
+    if (inputData.totalCount === 0) {
+      logger?.info("ℹ️ [Step 5] No firms to qualify");
       return {
         qualifiedFirmsJson: "[]",
         qualifiedCount: 0,
@@ -231,30 +289,17 @@ const scrapeAndQualify = createStep({
       };
     }
 
-    logger?.info(`🌐 [Step 4] Deep scraping ${inputData.newCount} NEW firm websites...`);
-    const scrapeResult = await scrapeFirmWebsitesTool.execute(
-      { firmsJson: inputData.newFirmsJson }, { mastra }
-    );
-
-    let scrapedFirmsJson = inputData.newFirmsJson;
-    if (!("error" in scrapeResult && scrapeResult.error)) {
-      scrapedFirmsJson = scrapeResult.firmsJson;
-      logger?.info(`✅ [Step 4] Scraped ${scrapeResult.scrapedCount}/${scrapeResult.totalCount} websites successfully`);
-    } else {
-      logger?.warn(`⚠️ [Step 4] Scraping error, proceeding with raw data`);
-    }
-
-    logger?.info(`🤖 [Step 5] Batch qualifying ${inputData.newCount} firms with Dust AI...`);
+    logger?.info(`🤖 [Step 5] Batch qualifying ${inputData.totalCount} firms with Dust AI...`);
     const dustResult = await qualifyDustBatchTool.execute(
-      { firmsJson: scrapedFirmsJson }, { mastra }
+      { firmsJson: inputData.scrapedFirmsJson }, { mastra }
     );
 
     if ("error" in dustResult && dustResult.error) {
       logger?.error(`❌ [Step 5] Dust batch error: ${dustResult.message}`);
       return {
-        qualifiedFirmsJson: scrapedFirmsJson,
+        qualifiedFirmsJson: inputData.scrapedFirmsJson,
         qualifiedCount: 0,
-        totalCount: inputData.newCount,
+        totalCount: inputData.totalCount,
         existingInDb: inputData.existingInDb,
         totalBeforeDedup: inputData.totalBeforeDedup,
       };
@@ -497,7 +542,8 @@ export const automationWorkflow = createWorkflow({
   .then(scrapeGoogleSearchSerpAPI as any)
   .then(consolidateFirms as any)
   .then(deduplicateAgainstDb as any)
-  .then(scrapeAndQualify as any)
+  .then(scrapeFirmWebsites as any)
+  .then(qualifyWithDustAI as any)
   .then(writeToDb as any)
   .then(generateCsvReport as any)
   .then(sendEmailSummary as any)

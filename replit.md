@@ -14,7 +14,7 @@ Automated bi-weekly Mastra/Inngest workflow that discovers and qualifies ecologi
 ## Key Files
 - `src/mastra/index.ts` — Main Mastra instance, cron registration, server config
 - `src/mastra/agents/agent.ts` — Anthropic-powered prospecting agent with all tools (prospecting + DB)
-- `src/mastra/workflows/workflow.ts` — 9-step sequential workflow with DB persistence
+- `src/mastra/workflows/workflow.ts` — 10-step sequential workflow with DB persistence
 - `src/mastra/tools/prospectingTools.ts` — Google Places API, SerpAPI Search (filtered), deep website scraping, CSV generation, email sending
 - `src/mastra/tools/databaseTools.ts` — initDbSchema, deduplicateAgainstDb, writeToDb, getDbStats
 - `src/mastra/tools/dustAiTool.ts` — Dust AI batch qualification tool (single API call, keyword fallback)
@@ -23,20 +23,23 @@ Automated bi-weekly Mastra/Inngest workflow that discovers and qualifies ecologi
 - `src/mastra/inngest/index.ts` — Inngest integration (createStep, createWorkflow)
 - `tests/testCronAutomation.ts` — Manual trigger for testing
 
-## Workflow Steps (9-step chain)
+## Workflow Steps (10-step chain)
 1. **initializeDatabase** — Create/verify PostgreSQL tables (cabinets, contacts, qualifications, scraping)
 2. **searchGooglePlaces** — 7 queries via Google Places API (~65-69 firms, billing enabled)
-3. **scrapeGoogleSearchSerpAPI** — 5 eco-focused SerpAPI queries with smart filtering (~6 firms)
+3. **scrapeGoogleSearchSerpAPI** — 8 eco-focused SerpAPI queries (5 local + 3 international) with smart filtering (~8 firms)
 4. **consolidateFirms** — Merge Places + SerpAPI, deduplicate by normalized name and domain (~58-61 unique)
 5. **deduplicateAgainstDb** — Check firms against PostgreSQL cabinets table, return only NEW firms
-6. **scrapeAndQualify** — Parallel deep scraping (batches of 5) + Dust AI batch qualification (skipped if 0 new firms)
-7. **writeToDb** — Persist all firms to cabinets/contacts/qualifications/scraping tables
-8. **generateCsvReport** — CSV of new qualified firms only (score >= 3)
-9. **sendEmailSummary** — Email report to michael@filtreplante.com with DB stats
+6. **scrapeFirmWebsites** — Deep scrape firm websites (contact pages first: /contact, /contactez-nous, etc.) with early-exit on email found
+7. **qualifyWithDustAI** — Dust AI batch qualification via agent 3hKwn579Sc (~110s)
+8. **writeToDb** — Persist all firms to cabinets/contacts/qualifications/scraping tables
+9. **generateCsvReport** — CSV of new qualified firms only (score >= 3)
+10. **sendEmailSummary** — Email report to michael@filtreplante.com with DB stats
+
+**Note**: Steps 6 and 7 were split from a single step to avoid Inngest function timeout (~4 min each separately vs ~4+ min combined).
 
 ## Discovery Sources
 - **Track A (Google Places API)**: 7 queries — cabinet architecture Sénégal, architecte Sénégal, bureau architecture Sénégal, architectural firm Senegal, architecture durable Sénégal, éco-construction Sénégal. Returns ~65-69 firms with addresses, phones, websites.
-- **Track B (SerpAPI)**: 5 eco-focused queries — BTC/brique de terre comprimée, pisé/terre crue, matériaux locaux/bio-sourcés, architecture bioclimatique/éco-construction, CRAterre/architecture en terre. Smart filtering: excludes articles/blogs/PDFs, non-institutional paths, 20+ excluded domains. Returns ~6 actual firm websites.
+- **Track B (SerpAPI)**: 8 queries total — 5 local eco-focused (BTC/brique de terre comprimée, pisé/terre crue, matériaux locaux/bio-sourcés, architecture bioclimatique/éco-construction, CRAterre/architecture en terre) + 3 international (architecte français Sénégal, architecture firm Senegal sustainable, Aga Khan Award Senegal). Smart filtering: excludes articles/blogs/PDFs, non-institutional paths, 20+ excluded domains. Returns ~8 actual firm websites.
 - **Track C (Specialized sites)**: DISABLED — Aga Khan, CRAterre, etc. were timing out. Tool code kept but removed from workflow chain.
 
 ## SerpAPI Filtering

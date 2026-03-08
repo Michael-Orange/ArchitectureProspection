@@ -155,6 +155,9 @@ export const scrapeGoogleSearchTool = createTool({
       'construction "matériaux locaux" OR "bio-sourcés" Sénégal',
       '"architecture bioclimatique" OR "éco-construction" Sénégal',
       '"CRAterre" OR "architecture en terre" Sénégal',
+      'architecte français projet Sénégal "développement durable"',
+      '"architecture firm" OR "cabinet" project Senegal sustainable',
+      '"Aga Khan Award" OR "LafargeHolcim" architecture Senegal project',
     ];
 
     const excludeDomains = [
@@ -358,7 +361,7 @@ export const scrapeFirmWebsitesTool = createTool({
       "développement durable", "éco-construction", "CRAterre",
     ];
 
-    const emailExcludes = ["example.com", "wixpress", "sentry.", "cloudflare", "googleapis"];
+    const emailExcludes = ["example.com", "example.", "test@", "noreply@", "no-reply@", "wixpress", "sentry.", "cloudflare", "googleapis"];
     const skipDomains = [
       "scribd.com", "semanticscholar.org", "researchrepository.ilo.org", "hal.science",
       "mongabay.com", "rfi.fr", "dw.com", "africanews.com", "construction21.org", "whc.unesco.org",
@@ -393,14 +396,33 @@ export const scrapeFirmWebsitesTool = createTool({
 
       try {
         const baseUrl = website.replace(/\/$/, "");
-        const pagesToTry = [baseUrl, `${baseUrl}/projets`, `${baseUrl}/about`];
+
+        const contactPages = [
+          `${baseUrl}/contact`,
+          `${baseUrl}/contact-us`,
+          `${baseUrl}/contactez-nous`,
+          `${baseUrl}/nous-contacter`,
+          `${baseUrl}/fr/contact`,
+          `${baseUrl}/en/contact`,
+        ];
+        const contentPages = [
+          baseUrl,
+          `${baseUrl}/about`,
+          `${baseUrl}/a-propos`,
+          `${baseUrl}/equipe`,
+          `${baseUrl}/team`,
+          `${baseUrl}/projets`,
+          `${baseUrl}/realisations`,
+          `${baseUrl}/projects`,
+          `${baseUrl}/portfolio`,
+        ];
 
         let fullContent = "";
         const foundEmails: string[] = [];
         const foundKeywords = new Set<string>();
         const foundProjects: string[] = [];
 
-        for (const pageUrl of pagesToTry) {
+        const fetchPage = async (pageUrl: string): Promise<string | null> => {
           try {
             const response = await fetch(pageUrl, {
               headers: {
@@ -410,51 +432,78 @@ export const scrapeFirmWebsitesTool = createTool({
               },
               signal: AbortSignal.timeout(6000),
             });
-
-            if (!response.ok) continue;
-
+            if (!response.ok) return null;
             const contentType = response.headers.get("content-type") || "";
-            if (!contentType.includes("text/html") && !contentType.includes("text/plain")) continue;
+            if (!contentType.includes("text/html") && !contentType.includes("text/plain")) return null;
+            return await response.text();
+          } catch { return null; }
+        };
 
-            const html = await response.text();
-
-            const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
-            const emails = html.match(emailRegex) || [];
-            for (const email of emails) {
-              const clean = email.toLowerCase().trim();
-              if (!foundEmails.includes(clean) && !emailExcludes.some(ex => clean.includes(ex)) && !clean.endsWith(".png") && !clean.endsWith(".jpg") && !clean.endsWith(".svg")) {
-                foundEmails.push(clean);
-              }
+        const extractEmails = (html: string) => {
+          const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+          const emails = html.match(emailRegex) || [];
+          for (const email of emails) {
+            const clean = email.toLowerCase().trim();
+            if (!foundEmails.includes(clean) && !emailExcludes.some(ex => clean.includes(ex)) && !clean.endsWith(".png") && !clean.endsWith(".jpg") && !clean.endsWith(".svg")) {
+              foundEmails.push(clean);
             }
+          }
+        };
 
-            const text = html
-              .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
-              .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
-              .replace(/<nav[^>]*>[\s\S]*?<\/nav>/gi, "")
-              .replace(/<footer[^>]*>[\s\S]*?<\/footer>/gi, "")
-              .replace(/<header[^>]*>[\s\S]*?<\/header>/gi, "")
-              .replace(/<[^>]+>/g, " ")
-              .replace(/\s+/g, " ")
-              .trim()
-              .substring(0, 1500);
+        const extractContent = (html: string) => {
+          const text = html
+            .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
+            .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+            .replace(/<nav[^>]*>[\s\S]*?<\/nav>/gi, "")
+            .replace(/<footer[^>]*>[\s\S]*?<\/footer>/gi, "")
+            .replace(/<header[^>]*>[\s\S]*?<\/header>/gi, "")
+            .replace(/<[^>]+>/g, " ")
+            .replace(/\s+/g, " ")
+            .trim()
+            .substring(0, 1500);
 
-            fullContent += text + " ";
+          fullContent += text + " ";
 
-            ecoKeywords.forEach(kw => {
-              if (text.toLowerCase().includes(kw.toLowerCase())) {
-                foundKeywords.add(kw);
-              }
-            });
-
-            const projectMatches = text.match(/(?:projet|réalisation|project|chantier)\s+([A-ZÀ-Ÿ][a-zà-ÿA-ZÀ-Ÿ\s-]{3,30})/gi);
-            if (projectMatches) {
-              for (const pm of projectMatches.slice(0, 3)) {
-                if (!foundProjects.includes(pm.trim())) foundProjects.push(pm.trim());
-              }
+          ecoKeywords.forEach(kw => {
+            if (text.toLowerCase().includes(kw.toLowerCase())) {
+              foundKeywords.add(kw);
             }
+          });
 
-            await new Promise(r => setTimeout(r, 200));
-          } catch { /* page inaccessible */ }
+          const projectMatches = text.match(/(?:projet|réalisation|project|chantier)\s+([A-ZÀ-Ÿ][a-zà-ÿA-ZÀ-Ÿ\s-]{3,30})/gi);
+          if (projectMatches) {
+            for (const pm of projectMatches.slice(0, 3)) {
+              if (!foundProjects.includes(pm.trim())) foundProjects.push(pm.trim());
+            }
+          }
+        };
+
+        let emailsFoundOnContact = false;
+        for (const contactUrl of contactPages) {
+          const html = await fetchPage(contactUrl);
+          if (html) {
+            extractEmails(html);
+            extractContent(html);
+            if (foundEmails.length > 0) {
+              emailsFoundOnContact = true;
+              logger?.info(`      📧 Found ${foundEmails.length} email(s) on ${contactUrl}`);
+              break;
+            }
+          }
+          await new Promise(r => setTimeout(r, 150));
+        }
+
+        let pagesVisited = 0;
+        const maxContentPages = 3;
+        for (const pageUrl of contentPages) {
+          if (pagesVisited >= maxContentPages) break;
+          const html = await fetchPage(pageUrl);
+          if (html) {
+            extractEmails(html);
+            extractContent(html);
+            pagesVisited++;
+          }
+          await new Promise(r => setTimeout(r, 200));
         }
 
         const scrapingSuccess = fullContent.trim().length > 100;
