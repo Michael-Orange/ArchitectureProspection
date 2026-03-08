@@ -157,7 +157,22 @@ export const scrapeGoogleSearchTool = createTool({
       '"CRAterre" OR "architecture en terre" Sénégal',
     ];
 
-    const excludeDomains = ["wikipedia", "archdaily", "pinterest", "facebook", "linkedin", "youtube", "twitter", "instagram"];
+    const excludeDomains = [
+      "wikipedia", "archdaily", "pinterest", "facebook", "linkedin", "youtube", "twitter", "instagram",
+      "climate-chance.org", "rfi.fr", "dw.com", "africanews.com", "mongabay.com", "construction21.org",
+      "scribd.com", "semanticscholar.org", "hal.science", "investissementimmoafrique.com", "resaud.net",
+      "vegetal-e.com", "peeb.build", "techtitute.com", "reseauf3e.org", "enviroboite.net",
+      "ideassonline.org", "craterre.hypotheses.org", "afrik21.africa",
+    ];
+
+    const excludePatterns = [
+      "/la-construction/", "/focus/", "/bonne-pratique/", "/case/", "/programme-de-construction",
+      "/darchitecture-en-terre-crue", "/blog/", "/article/", "/tag/", "/podcasts/", "/video-",
+      "/wp-content/", "/presentation/",
+    ];
+
+    const allowedPaths = ["/", "/atelier", "/about", "/projets", "/services", "/presentation", "/equipe", "/contact", "/accueil"];
+
     const firms: Array<{name: string; website?: string; snippet?: string; source: string}> = [];
     const seenDomains = new Set<string>();
 
@@ -181,19 +196,44 @@ export const scrapeGoogleSearchTool = createTool({
           try {
             const url = new URL(result.link);
             const domain = url.hostname.replace("www.", "");
+            const urlPath = url.pathname.replace(/\/$/, "") || "/";
 
-            if (excludeDomains.some(d => domain.includes(d))) continue;
+            if (excludeDomains.some(d => domain.includes(d))) {
+              logger?.info(`   🚫 Filtered (excluded domain): ${domain} — ${result.title}`);
+              continue;
+            }
+
+            if (result.link.toLowerCase().endsWith(".pdf")) {
+              logger?.info(`   🚫 Filtered (PDF): ${result.link}`);
+              continue;
+            }
+
+            if (excludePatterns.some(p => url.pathname.toLowerCase().includes(p))) {
+              logger?.info(`   🚫 Filtered (article/blog pattern): ${url.pathname} — ${result.title}`);
+              continue;
+            }
+
+            const isAllowedPath = allowedPaths.some(ap => urlPath === ap || urlPath.startsWith(ap + "/")) || urlPath === "/";
+            if (!isAllowedPath) {
+              logger?.info(`   🚫 Filtered (non-institutional path): ${urlPath} — ${result.title}`);
+              continue;
+            }
+
             if (seenDomains.has(domain)) continue;
             seenDomains.add(domain);
 
+            let cleanName = result.title || domain;
+            cleanName = cleanName.replace(/\s*[-|:].*$/, "").trim();
+            if (!cleanName) cleanName = domain;
+
             firms.push({
-              name: result.title || domain,
+              name: cleanName,
               website: result.link,
               snippet: result.snippet || "",
               source: "SerpAPI Google Search",
             });
 
-            logger?.info(`   ✅ ${result.title || domain}`);
+            logger?.info(`   ✅ ${cleanName}`);
           } catch { /* skip invalid URL */ }
         }
 
@@ -319,7 +359,15 @@ export const scrapeFirmWebsitesTool = createTool({
     ];
 
     const emailExcludes = ["example.com", "wixpress", "sentry.", "cloudflare", "googleapis"];
-    const skipDomains = ["scribd.com", "semanticscholar.org", "researchrepository.ilo.org", "hal.science", "mongabay.com", "rfi.fr", "dw.com", "africanews.com", "construction21.org", "whc.unesco.org"];
+    const skipDomains = [
+      "scribd.com", "semanticscholar.org", "researchrepository.ilo.org", "hal.science",
+      "mongabay.com", "rfi.fr", "dw.com", "africanews.com", "construction21.org", "whc.unesco.org",
+      "climate-chance.org", "investissementimmoafrique.com", "resaud.net", "vegetal-e.com",
+      "peeb.build", "techtitute.com", "reseauf3e.org", "enviroboite.net", "ideassonline.org",
+      "craterre.hypotheses.org", "afrik21.africa",
+      "wikipedia.org", "archdaily.com", "pinterest.com", "facebook.com", "linkedin.com",
+      "youtube.com", "twitter.com", "instagram.com",
+    ];
     const scrapedFirms: any[] = [];
 
     const scrapeSingleFirm = async (firm: any, index: number): Promise<any> => {

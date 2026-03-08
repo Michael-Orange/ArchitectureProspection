@@ -4,16 +4,21 @@ import { automationAgent } from "../agents/agent";
 import {
   searchGooglePlacesTool,
   scrapeGoogleSearchTool,
-  extractFromSpecializedSitesTool,
   scrapeFirmWebsitesTool,
   generateCsvTool,
   sendEmailTool,
 } from "../tools/prospectingTools";
 import { qualifyDustBatchTool } from "../tools/dustAiTool";
+import {
+  initDbSchemaTool,
+  deduplicateAgainstDbTool,
+  writeToDbTool,
+  getDbStatsTool,
+} from "../tools/databaseTools";
 
 const initializeDatabase = createStep({
   id: "initialize-database",
-  description: "Initialize database and prepare for prospecting run",
+  description: "Initialize PostgreSQL schema and prepare for prospecting run",
   inputSchema: z.object({}).passthrough(),
   outputSchema: z.object({
     runDate: z.string(),
@@ -21,10 +26,18 @@ const initializeDatabase = createStep({
   }),
   execute: async ({ inputData, mastra }) => {
     const logger = mastra?.getLogger();
-    logger?.info("💾 [Step 1] Initializing database...");
+    logger?.info("💾 [Step 1] Initializing database schema...");
+
+    const schemaResult = await initDbSchemaTool.execute({ placeholder: "" }, { mastra });
+    if ("errorMessage" in schemaResult && schemaResult.errorMessage) {
+      logger?.error(`❌ [Step 1] Schema init failed: ${schemaResult.errorMessage}`);
+    } else {
+      logger?.info(`✅ [Step 1] Schema ready: ${schemaResult.tablesCreated?.join(", ")}`);
+    }
+
     const runDate = new Date().toISOString();
     logger?.info(`📅 [Step 1] Run date: ${runDate}`);
-    return { runDate, dbReady: true };
+    return { runDate, dbReady: schemaResult.success };
   },
 });
 
@@ -65,6 +78,7 @@ const scrapeGoogleSearchSerpAPI = createStep({
     allFirmsJson: z.string(),
     googlePlacesCount: z.number(),
     serpApiCount: z.number(),
+    totalBeforeDedup: z.number(),
   }),
   execute: async ({ inputData, mastra }) => {
     const logger = mastra?.getLogger();
@@ -73,7 +87,9 @@ const scrapeGoogleSearchSerpAPI = createStep({
     const result = await scrapeGoogleSearchTool.execute({ placeholder: "" }, { mastra });
     if ("error" in result && result.error) {
       logger?.error(`❌ [Step 2B] Tool error: ${result.message}`);
-      return { ...inputData, serpApiCount: 0 };
+      let existing: any[] = [];
+      try { existing = JSON.parse(inputData.allFirmsJson); } catch { existing = []; }
+      return { ...inputData, serpApiCount: 0, totalBeforeDedup: existing.length };
     }
 
     let existingFirms: any[] = [];
@@ -85,48 +101,6 @@ const scrapeGoogleSearchSerpAPI = createStep({
       allFirmsJson: JSON.stringify(combined),
       googlePlacesCount: inputData.googlePlacesCount,
       serpApiCount: result.count,
-    };
-  },
-});
-
-const scrapeSpecializedSites = createStep({
-  id: "scrape-specialized-sites",
-  description: "Scrape specialized sites: Aga Khan, CRAterre, LafargeHolcim, ASF, Afrik21",
-  inputSchema: z.object({
-    allFirmsJson: z.string(),
-    googlePlacesCount: z.number(),
-    serpApiCount: z.number(),
-  }),
-  outputSchema: z.object({
-    allFirmsJson: z.string(),
-    googlePlacesCount: z.number(),
-    serpApiCount: z.number(),
-    specializedCount: z.number(),
-    totalBeforeDedup: z.number(),
-  }),
-  execute: async ({ inputData, mastra }) => {
-    const logger = mastra?.getLogger();
-    logger?.info("🔍 [Step 2C] Extracting from specialized sites...");
-    logger?.info("   Aga Khan Award | CRAterre | LafargeHolcim | ASF | Afrik21");
-
-    const result = await extractFromSpecializedSitesTool.execute({ placeholder: "" }, { mastra });
-    if ("error" in result && result.error) {
-      logger?.error(`❌ [Step 2C] Tool error: ${result.message}`);
-      let existing: any[] = [];
-      try { existing = JSON.parse(inputData.allFirmsJson); } catch { existing = []; }
-      return { ...inputData, specializedCount: 0, totalBeforeDedup: existing.length };
-    }
-
-    let existingFirms: any[] = [];
-    try { existingFirms = JSON.parse(inputData.allFirmsJson); } catch { existingFirms = []; }
-
-    const combined = [...existingFirms, ...result.firms];
-    logger?.info(`✅ [Step 2C] Found ${result.count} firms from specialized sites. Total: ${combined.length}`);
-    return {
-      allFirmsJson: JSON.stringify(combined),
-      googlePlacesCount: inputData.googlePlacesCount,
-      serpApiCount: inputData.serpApiCount,
-      specializedCount: result.count,
       totalBeforeDedup: combined.length,
     };
   },
@@ -134,12 +108,11 @@ const scrapeSpecializedSites = createStep({
 
 const consolidateFirms = createStep({
   id: "consolidate-firms",
-  description: "Deduplicate firms from all sources",
+  description: "Deduplicate firms from all sources (domain-based)",
   inputSchema: z.object({
     allFirmsJson: z.string(),
     googlePlacesCount: z.number(),
     serpApiCount: z.number(),
-    specializedCount: z.number(),
     totalBeforeDedup: z.number(),
   }),
   outputSchema: z.object({
@@ -154,23 +127,34 @@ const consolidateFirms = createStep({
     let allFirms: any[] = [];
     try { allFirms = JSON.parse(inputData.allFirmsJson); } catch { allFirms = []; }
 
-    const unique = allFirms.reduce((acc: any[], firm: any) => {
-      if (!firm.website) { acc.push(firm); return acc; }
-      try {
-        const domain = new URL(firm.website).hostname.replace("www.", "").toLowerCase();
-        if (!acc.find((f: any) => {
-          if (!f.website) return false;
-          try { return new URL(f.website).hostname.replace("www.", "").toLowerCase() === domain; } catch { return false; }
-        })) {
-          acc.push(firm);
-        }
-      } catch {
-        acc.push(firm);
-      }
-      return acc;
-    }, []);
+    const seenDomains = new Set<string>();
+    const seenNames = new Set<string>();
+    const unique: any[] = [];
 
-    logger?.info(`📊 [Step 3] Sources: Places=${inputData.googlePlacesCount}, SerpAPI=${inputData.serpApiCount}, Specialized=${inputData.specializedCount}`);
+    for (const firm of allFirms) {
+      const normName = (firm.name || "").trim().toLowerCase().replace(/[^a-z0-9àâäéèêëïîôùûüÿçœæ]/g, "");
+
+      if (firm.website) {
+        try {
+          const domain = new URL(firm.website).hostname.replace("www.", "").toLowerCase();
+          if (seenDomains.has(domain)) {
+            logger?.info(`   ⏭️ Duplicate domain: ${domain} (${firm.name})`);
+            continue;
+          }
+          seenDomains.add(domain);
+        } catch { /* keep */ }
+      } else {
+        if (seenNames.has(normName)) {
+          logger?.info(`   ⏭️ Duplicate name: ${firm.name}`);
+          continue;
+        }
+      }
+
+      if (normName) seenNames.add(normName);
+      unique.push(firm);
+    }
+
+    logger?.info(`📊 [Step 3] Sources: Places=${inputData.googlePlacesCount}, SerpAPI=${inputData.serpApiCount}`);
     logger?.info(`📊 [Step 3] Before dedup: ${inputData.totalBeforeDedup}, After: ${unique.length}`);
 
     return {
@@ -181,11 +165,48 @@ const consolidateFirms = createStep({
   },
 });
 
-const scrapeAndQualify = createStep({
-  id: "scrape-and-qualify",
-  description: "Deep scrape all firm websites then batch qualify with Dust AI in a single step",
+const deduplicateAgainstDb = createStep({
+  id: "deduplicate-against-db",
+  description: "Check firms against PostgreSQL to find only NEW firms not yet in database",
   inputSchema: z.object({
     uniqueFirmsJson: z.string(),
+    uniqueCount: z.number(),
+    totalBeforeDedup: z.number(),
+  }),
+  outputSchema: z.object({
+    newFirmsJson: z.string(),
+    newCount: z.number(),
+    existingInDb: z.number(),
+    uniqueCount: z.number(),
+    totalBeforeDedup: z.number(),
+  }),
+  execute: async ({ inputData, mastra }) => {
+    const logger = mastra?.getLogger();
+    logger?.info(`🔍 [Step 3B] Deduplicating ${inputData.uniqueCount} firms against database...`);
+
+    const result = await deduplicateAgainstDbTool.execute(
+      { firmsJson: inputData.uniqueFirmsJson }, { mastra }
+    );
+
+    logger?.info(`✅ [Step 3B] New firms: ${result.newCount}, Already in DB: ${result.existingCount}`);
+
+    return {
+      newFirmsJson: result.newFirmsJson,
+      newCount: result.newCount,
+      existingInDb: result.existingCount,
+      uniqueCount: inputData.uniqueCount,
+      totalBeforeDedup: inputData.totalBeforeDedup,
+    };
+  },
+});
+
+const scrapeAndQualify = createStep({
+  id: "scrape-and-qualify",
+  description: "Deep scrape new firm websites then batch qualify with Dust AI in a single step",
+  inputSchema: z.object({
+    newFirmsJson: z.string(),
+    newCount: z.number(),
+    existingInDb: z.number(),
     uniqueCount: z.number(),
     totalBeforeDedup: z.number(),
   }),
@@ -193,17 +214,29 @@ const scrapeAndQualify = createStep({
     qualifiedFirmsJson: z.string(),
     qualifiedCount: z.number(),
     totalCount: z.number(),
+    existingInDb: z.number(),
     totalBeforeDedup: z.number(),
   }),
   execute: async ({ inputData, mastra }) => {
     const logger = mastra?.getLogger();
 
-    logger?.info(`🌐 [Step 4] Deep scraping ${inputData.uniqueCount} firm websites...`);
+    if (inputData.newCount === 0) {
+      logger?.info("ℹ️ [Step 4+5] No new firms to process — all already in database");
+      return {
+        qualifiedFirmsJson: "[]",
+        qualifiedCount: 0,
+        totalCount: 0,
+        existingInDb: inputData.existingInDb,
+        totalBeforeDedup: inputData.totalBeforeDedup,
+      };
+    }
+
+    logger?.info(`🌐 [Step 4] Deep scraping ${inputData.newCount} NEW firm websites...`);
     const scrapeResult = await scrapeFirmWebsitesTool.execute(
-      { firmsJson: inputData.uniqueFirmsJson }, { mastra }
+      { firmsJson: inputData.newFirmsJson }, { mastra }
     );
 
-    let scrapedFirmsJson = inputData.uniqueFirmsJson;
+    let scrapedFirmsJson = inputData.newFirmsJson;
     if (!("error" in scrapeResult && scrapeResult.error)) {
       scrapedFirmsJson = scrapeResult.firmsJson;
       logger?.info(`✅ [Step 4] Scraped ${scrapeResult.scrapedCount}/${scrapeResult.totalCount} websites successfully`);
@@ -211,7 +244,7 @@ const scrapeAndQualify = createStep({
       logger?.warn(`⚠️ [Step 4] Scraping error, proceeding with raw data`);
     }
 
-    logger?.info(`🤖 [Step 5] Batch qualifying ${inputData.uniqueCount} firms with Dust AI...`);
+    logger?.info(`🤖 [Step 5] Batch qualifying ${inputData.newCount} firms with Dust AI...`);
     const dustResult = await qualifyDustBatchTool.execute(
       { firmsJson: scrapedFirmsJson }, { mastra }
     );
@@ -221,7 +254,8 @@ const scrapeAndQualify = createStep({
       return {
         qualifiedFirmsJson: scrapedFirmsJson,
         qualifiedCount: 0,
-        totalCount: inputData.uniqueCount,
+        totalCount: inputData.newCount,
+        existingInDb: inputData.existingInDb,
         totalBeforeDedup: inputData.totalBeforeDedup,
       };
     }
@@ -236,6 +270,8 @@ const scrapeAndQualify = createStep({
       websiteUrl: f.websiteUrl || f.website || "",
       website: f.website || f.websiteUrl || "",
       emails: f.emails || [],
+      phone: f.phone || "",
+      address: f.address || "",
       source: f.source || "",
       score: f.score || 1,
       pertinent: f.pertinent || false,
@@ -243,71 +279,142 @@ const scrapeAndQualify = createStep({
       projet_recent: f.projet_recent || null,
       typologies: f.typologies || [],
       langue: f.langue || "fr",
+      scrapedContent: f.scrapedContent || "",
+      keywords: f.keywords || [],
+      projects: f.projects || [],
+      scrapingSuccess: f.scrapingSuccess || false,
     }));
 
     return {
       qualifiedFirmsJson: JSON.stringify(compactFirms),
       qualifiedCount: dustResult.qualifiedCount,
       totalCount: dustResult.totalCount,
+      existingInDb: inputData.existingInDb,
       totalBeforeDedup: inputData.totalBeforeDedup,
+    };
+  },
+});
+
+const writeToDb = createStep({
+  id: "write-to-db",
+  description: "Persist all qualified firms to PostgreSQL database",
+  inputSchema: z.object({
+    qualifiedFirmsJson: z.string(),
+    qualifiedCount: z.number(),
+    totalCount: z.number(),
+    existingInDb: z.number(),
+    totalBeforeDedup: z.number(),
+  }),
+  outputSchema: z.object({
+    qualifiedFirmsJson: z.string(),
+    qualifiedCount: z.number(),
+    totalCount: z.number(),
+    existingInDb: z.number(),
+    totalBeforeDedup: z.number(),
+    dbWritten: z.number(),
+    dbContacts: z.number(),
+  }),
+  execute: async ({ inputData, mastra }) => {
+    const logger = mastra?.getLogger();
+    logger?.info("💾 [Step 6] Writing qualified firms to database...");
+
+    let firms: any[] = [];
+    try { firms = JSON.parse(inputData.qualifiedFirmsJson); } catch { firms = []; }
+
+    if (firms.length === 0) {
+      logger?.info("ℹ️ [Step 6] No firms to write to database");
+      return { ...inputData, dbWritten: 0, dbContacts: 0 };
+    }
+
+    const result = await writeToDbTool.execute(
+      { firmsJson: inputData.qualifiedFirmsJson }, { mastra }
+    );
+
+    if (result.errorMessage) {
+      logger?.warn(`⚠️ [Step 6] DB write had errors: ${result.errorMessage}`);
+    }
+
+    logger?.info(`✅ [Step 6] DB written: ${result.cabinetCount} cabinets, ${result.contactCount} contacts, ${result.qualificationCount} qualifications, ${result.scrapingCount} scraping`);
+
+    return {
+      ...inputData,
+      dbWritten: result.cabinetCount,
+      dbContacts: result.contactCount,
     };
   },
 });
 
 const generateCsvReport = createStep({
   id: "generate-csv-report",
-  description: "Generate CSV report of qualified prospects (score >= 3)",
+  description: "Generate CSV report of NEW qualified prospects (score >= 3)",
   inputSchema: z.object({
     qualifiedFirmsJson: z.string(),
     qualifiedCount: z.number(),
     totalCount: z.number(),
+    existingInDb: z.number(),
     totalBeforeDedup: z.number(),
+    dbWritten: z.number(),
+    dbContacts: z.number(),
   }),
   outputSchema: z.object({
     csvContent: z.string(),
     csvPath: z.string(),
     totalCount: z.number(),
     qualifiedCount: z.number(),
+    existingInDb: z.number(),
     totalBeforeDedup: z.number(),
+    dbWritten: z.number(),
+    dbContacts: z.number(),
   }),
   execute: async ({ inputData, mastra }) => {
     const logger = mastra?.getLogger();
-    logger?.info("📊 [Step 6] Generating CSV report...");
+    logger?.info("📊 [Step 7] Generating CSV report of NEW qualified firms...");
 
     const result = await generateCsvTool.execute(
       { firmsJson: inputData.qualifiedFirmsJson }, { mastra }
     );
 
     if ("error" in result && result.error) {
-      logger?.error(`❌ [Step 6] CSV generation failed: ${result.message}`);
+      logger?.error(`❌ [Step 7] CSV generation failed: ${result.message}`);
       return {
-        csvContent: "", csvPath: "", totalCount: 0, qualifiedCount: 0,
+        csvContent: "", csvPath: "",
+        totalCount: inputData.totalCount,
+        qualifiedCount: inputData.qualifiedCount,
+        existingInDb: inputData.existingInDb,
         totalBeforeDedup: inputData.totalBeforeDedup,
+        dbWritten: inputData.dbWritten,
+        dbContacts: inputData.dbContacts,
       };
     }
 
-    logger?.info(`✅ [Step 6] CSV generated: ${result.csvPath}`);
-    logger?.info(`   Total: ${result.totalCount}, Qualified: ${result.qualifiedCount}`);
+    logger?.info(`✅ [Step 7] CSV generated: ${result.csvPath}`);
+    logger?.info(`   Total new: ${result.totalCount}, Qualified: ${result.qualifiedCount}`);
 
     return {
       csvContent: result.csvContent,
       csvPath: result.csvPath,
       totalCount: result.totalCount,
       qualifiedCount: result.qualifiedCount,
+      existingInDb: inputData.existingInDb,
       totalBeforeDedup: inputData.totalBeforeDedup,
+      dbWritten: inputData.dbWritten,
+      dbContacts: inputData.dbContacts,
     };
   },
 });
 
 const sendEmailSummary = createStep({
   id: "send-email-summary",
-  description: "Send email with CSV report to michael@filtreplante.com",
+  description: "Send email with CSV report and DB stats to michael@filtreplante.com",
   inputSchema: z.object({
     csvContent: z.string(),
     csvPath: z.string(),
     totalCount: z.number(),
     qualifiedCount: z.number(),
+    existingInDb: z.number(),
     totalBeforeDedup: z.number(),
+    dbWritten: z.number(),
+    dbContacts: z.number(),
   }),
   outputSchema: z.object({
     sent: z.boolean(),
@@ -317,21 +424,37 @@ const sendEmailSummary = createStep({
   }),
   execute: async ({ inputData, mastra }) => {
     const logger = mastra?.getLogger();
-    logger?.info("📬 [Step 7] Sending email summary...");
+    logger?.info("📬 [Step 8] Sending email summary with DB stats...");
+
+    let dbStats = { totalCabinets: 0, totalContacts: 0, totalQualifications: 0, totalQualified: 0, totalScraping: 0 };
+    try {
+      dbStats = await getDbStatsTool.execute({ placeholder: "" }, { mastra });
+      logger?.info(`📊 [Step 8] DB stats: ${dbStats.totalCabinets} total cabinets, ${dbStats.totalQualified} qualified`);
+    } catch (err: any) {
+      logger?.warn(`⚠️ [Step 8] Could not fetch DB stats: ${err.message}`);
+    }
 
     const qualRate = inputData.totalCount > 0
       ? Math.round((inputData.qualifiedCount / inputData.totalCount) * 100)
       : 0;
 
-    const summaryText = `Prospection Automatique Bi-Hebdomadaire - ${new Date().toLocaleDateString("fr-FR")}
+    const summaryText = `Prospection Automatique Bi-Hebdomadaire — ${new Date().toLocaleDateString("fr-FR")}
 
-Résultats:
+═══ NOUVEAUX PROSPECTS (cette exécution) ═══
 - Cabinets découverts (avant dédup): ${inputData.totalBeforeDedup}
-- Cabinets uniques traités: ${inputData.totalCount}
-- Cabinets qualifiés (score >= 3): ${inputData.qualifiedCount}
+- Déjà connus en BDD: ${inputData.existingInDb}
+- Nouveaux cabinets traités: ${inputData.totalCount}
+- Nouveaux qualifiés (score ≥ 3): ${inputData.qualifiedCount}
 - Taux de qualification: ${qualRate}%
+- Écrits en BDD: ${inputData.dbWritten} cabinets, ${inputData.dbContacts} contacts
 
-Sources: Google Places API, SerpAPI Google Search, Aga Khan Award, CRAterre, LafargeHolcim Foundation, Architecture sans Frontières, Afrik21
+═══ TOTAUX EN BASE DE DONNÉES ═══
+- Total cabinets: ${dbStats.totalCabinets}
+- Total contacts: ${dbStats.totalContacts}
+- Total qualifiés (score ≥ 3): ${dbStats.totalQualified}
+
+Sources: Google Places API, SerpAPI Google Search
+Track C (sites spécialisés) désactivé temporairement.
 
 Qualification Dust AI (score 1-5):
 - 1-2: Non qualifié
@@ -350,11 +473,11 @@ CSV: ${inputData.csvPath}`;
     );
 
     if ("error" in result && result.error) {
-      logger?.error(`❌ [Step 7] Email failed: ${result.message}`);
+      logger?.error(`❌ [Step 8] Email failed: ${result.message}`);
       return { sent: false, recipient: "michael@filtreplante.com", summary: summaryText, messageId: undefined };
     }
 
-    logger?.info(`✅ [Step 7] Email sent to ${result.recipient}`);
+    logger?.info(`✅ [Step 8] Email sent to ${result.recipient}`);
     return { sent: result.sent, recipient: result.recipient, summary: summaryText, messageId: result.messageId };
   },
 });
@@ -372,9 +495,10 @@ export const automationWorkflow = createWorkflow({
   .then(initializeDatabase as any)
   .then(searchGooglePlaces as any)
   .then(scrapeGoogleSearchSerpAPI as any)
-  .then(scrapeSpecializedSites as any)
   .then(consolidateFirms as any)
+  .then(deduplicateAgainstDb as any)
   .then(scrapeAndQualify as any)
+  .then(writeToDb as any)
   .then(generateCsvReport as any)
   .then(sendEmailSummary as any)
   .commit();

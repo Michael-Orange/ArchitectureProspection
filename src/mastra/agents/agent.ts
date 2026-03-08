@@ -10,6 +10,12 @@ import {
   sendEmailTool,
 } from "../tools/prospectingTools";
 import { qualifyDustBatchTool } from "../tools/dustAiTool";
+import {
+  initDbSchemaTool,
+  deduplicateAgainstDbTool,
+  writeToDbTool,
+  getDbStatsTool,
+} from "../tools/databaseTools";
 
 const anthropic = createAnthropic({
   baseURL: process.env.AI_INTEGRATIONS_ANTHROPIC_BASE_URL,
@@ -24,22 +30,19 @@ export const automationAgent = new Agent({
 Ta mission est d'orchestrer la découverte et la qualification de cabinets d'architecture spécialisés en construction écologique (BTC, pisé, terre crue, bioclimatique).
 
 Quand on te demande d'exécuter le workflow :
-1. Utilise les outils de recherche pour découvrir des cabinets (Google Places API, SerpAPI, sites spécialisés)
-2. Scrape en profondeur les sites web découverts (emails, contenu, mots-clés écologiques)
-3. Qualifie tous les cabinets en batch via Dust AI (score 1-5)
-4. Génère un rapport CSV des cabinets qualifiés (score >= 3)
-5. Envoie le rapport par email
+1. Utilise les outils de recherche pour découvrir des cabinets (Google Places API, SerpAPI)
+2. Déduplique contre la base de données PostgreSQL (ne traite que les nouveaux)
+3. Scrape en profondeur les sites web des nouveaux cabinets (emails, contenu, mots-clés écologiques)
+4. Qualifie tous les cabinets en batch via Dust AI (score 1-5)
+5. Persiste les résultats en BDD (cabinets, contacts, qualifications, scraping)
+6. Génère un rapport CSV des cabinets qualifiés (score >= 3)
+7. Envoie le rapport par email avec statistiques BDD
 
 Score Dust AI (1-5) :
 - 1-2 : Non qualifié
 - 3-5 : Qualifié (exporté dans le CSV)
 
-Sources spécialisées à explorer :
-- Aga Khan Award (akdn.org, archnet.org)
-- CRAterre (craterre.org)
-- LafargeHolcim Foundation
-- Architecture sans Frontières (asf-france.com)
-- Afrik21 (afrik21.africa) - mots-clés : BTC, pisé, terre, bioclimatique
+Track C (sites spécialisés) est temporairement désactivé.
 
 Sois méthodique et priorise la qualité des prospects.`,
 
@@ -53,5 +56,9 @@ Sois méthodique et priorise la qualité des prospects.`,
     qualifyDustBatchTool,
     generateCsvTool,
     sendEmailTool,
+    initDbSchemaTool,
+    deduplicateAgainstDbTool,
+    writeToDbTool,
+    getDbStatsTool,
   },
 });
