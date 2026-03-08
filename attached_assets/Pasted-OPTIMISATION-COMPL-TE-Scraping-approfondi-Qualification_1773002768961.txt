@@ -1,0 +1,258 @@
+OPTIMISATION COMPLÈTE - Scraping approfondi + Qualification Dust en batch
+
+OBJECTIF : 
+- Qualifier 30 cabinets en ~10 minutes total (au lieu de 2h30)
+- 1 seul appel Dust (au lieu de 30) = pas de rate limiting
+- Meilleure qualité de qualification
+
+MODIFICATIONS NÉCESSAIRES :
+
+═══════════════════════════════════════════════════════════
+
+MODULE 2 - SCRAPING APPROFONDI (à améliorer)
+
+Pour chaque cabinet qui a un site web, faire un scraping EN PROFONDEUR :
+
+```typescript
+export const scrapeFirmWebsitesTool = createTool({
+  id: "scrape-firm-websites",
+  description: "Deep scraping of firm websites to extract full content",
+  execute: async ({ context }) => {
+    const { firms } = context;
+    const scrapedFirms = [];
+
+    for (const firm of firms) {
+      if (!firm.website) {
+        scrapedFirms.push({
+          ...firm,
+          scrapedContent: "",
+          keywords: [],
+          projects: [],
+          scrapingSuccess: false,
+        });
+        continue;
+      }
+
+      try {
+        // Pages à scraper (dans l'ordre de priorité)
+        const pagesToTry = [
+          firm.website,  // Homepage
+          `${firm.website}/projets`,
+          `${firm.website}/realisations`,
+          `${firm.website}/projects`,
+          `${firm.website}/about`,
+          `${firm.website}/equipe`,
+          `${firm.website}/contact`,
+        ];
+
+        let fullContent = "";
+        const foundProjects = [];
+        const foundKeywords = new Set();
+
+        // Mots-clés écologiques à détecter
+        const ecoKeywords = [
+          "BTC", "brique de terre comprimée", "pisé", "terre crue", 
+          "adobe", "banco", "bioclimatique", "durable", "écologique",
+          "HQE", "LEED", "BREEAM", "matériaux locaux", "bio-sourcés",
+          "développement durable", "éco-construction", "CRAterre"
+        ];
+
+        for (const url of pagesToTry) {
+          try {
+            const response = await fetch(url, { 
+              timeout: 10000,
+              headers: { "User-Agent": "Mozilla/5.0..." }
+            });
+            
+            if (!response.ok) continue;
+            
+            const html = await response.text();
+            const $ = cheerio.load(html);
+            
+            // Extraire le texte pertinent (enlever scripts, styles, nav, footer)
+            $('script, style, nav, footer, header').remove();
+            const pageText = $('body').text()
+              .replace(/\s+/g, ' ')
+              .trim()
+              .substring(0, 2000);  // Max 2000 caractères par page
+            
+            fullContent += pageText + " ";
+
+            // Détecter les mots-clés
+            ecoKeywords.forEach(kw => {
+              if (pageText.toLowerCase().includes(kw.toLowerCase())) {
+                foundKeywords.add(kw);
+              }
+            });
+
+            // Détecter les projets (basique : lignes avec "projet", "réalisation", etc.)
+            const projectMatches = pageText.match(/(?:projet|réalisation|project)\s+([A-Z][a-zÀ-ÿ\s]+)/gi);
+            if (projectMatches) {
+              foundProjects.push(...projectMatches.slice(0, 3));
+            }
+
+            await new Promise(r => setTimeout(r, 500));  // Pause entre pages
+          } catch (e) {
+            // Page inaccessible, continuer
+          }
+        }
+
+        scrapedFirms.push({
+          ...firm,
+          scrapedContent: fullContent.trim(),
+          keywords: Array.from(foundKeywords),
+          projects: foundProjects,
+          scrapingSuccess: fullContent.length > 100,
+        });
+
+        console.log(`Scraped ${firm.name}: ${fullContent.length} chars, ${foundKeywords.size} keywords`);
+
+      } catch (error) {
+        scrapedFirms.push({
+          ...firm,
+          scrapedContent: firm.notes || "",
+          keywords: [],
+          projects: [],
+          scrapingSuccess: false,
+        });
+      }
+
+      await new Promise(r => setTimeout(r, 1000));  // 1s entre cabinets
+    }
+
+    console.log(`Scraping complete: ${scrapedFirms.filter(f => f.scrapingSuccess).length}/${firms.length} success`);
+
+    return { firms: scrapedFirms };
+  },
+});
+═══════════════════════════════════════════════════════════
+MODULE 4 - QUALIFICATION DUST EN BATCH (nouvelle version)
+Envoyer TOUS les cabinets en une seule requête Dust :
+export const qualifyWithDustBatchTool = createTool({
+  id: "qualify-dust-batch",
+  description: "Qualify all firms in one Dust API call",
+  execute: async ({ context }) => {
+    const { firms } = context;
+
+    // Préparer les données pour Dust
+    const firmsData = firms.map((firm, index) => ({
+      id: index + 1,
+      nom: firm.name || "N/A",
+      pays: firm.country || "Sénégal",
+      site_web: firm.website || "N/A",
+      contenu: firm.scrapedContent || firm.notes || "Aucune information disponible",
+      mots_cles_detectes: firm.keywords?.join(", ") || "Aucun",
+      projets_mentionnes: firm.projects?.join(", ") || "Aucun",
+      source: firm.source,
+    }));
+
+    const prompt = `Voici ${firmsData.length} cabinets d'architecture à qualifier.
+
+CABINETS :
+${JSON.stringify(firmsData, null, 2)}
+
+Analyse chaque cabinet selon les critères dans tes instructions et retourne le JSON array.`;
+
+    // Appel unique à Dust
+    try {
+      const response = await fetch(
+        `https://dust.tt/api/v1/w/${process.env.DUST_WORKSPACE_ID}/assistant/conversations`,
+        {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${process.env.DUST_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            message: {
+              content: prompt,
+              context: { timezone: "UTC" },
+            },
+            agentConfigurationId: process.env.DUST_AGENT_ID,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(`Dust API error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      
+      // Extraire le message de l'agent
+      const agentMessage = data.conversation?.content?.[0]?.content;
+      
+      // Parser le JSON array retourné
+      const qualifications = JSON.parse(agentMessage);
+
+      // Merger avec les firmes originales
+      const qualifiedFirms = firms.map((firm, index) => {
+        const qual = qualifications.find(q => q.id === index + 1) || {
+          score: 1,
+          pertinent: false,
+          raison: "Qualification échouée",
+          projet_recent: null,
+          typologies: [],
+          langue: "fr",
+        };
+
+        return {
+          ...firm,
+          score: qual.score,
+          pertinent: qual.pertinent,
+          raison: qual.raison,
+          projet_recent: qual.projet_recent,
+          typologies: qual.typologies,
+          langue: qual.langue,
+        };
+      });
+
+      const qualifiedCount = qualifiedFirms.filter(f => f.score >= 3).length;
+
+      console.log(`Dust qualification: ${qualifiedCount}/${firms.length} qualified (score >= 3)`);
+
+      return {
+        firms: qualifiedFirms,
+        qualifiedCount,
+      };
+
+    } catch (error) {
+      console.error("Dust batch qualification error:", error);
+      
+      // Fallback : score 1 pour tous
+      return {
+        firms: firms.map(f => ({
+          ...f,
+          score: 1,
+          pertinent: false,
+          raison: "Erreur qualification Dust",
+          projet_recent: null,
+          typologies: [],
+          langue: "fr",
+        })),
+        qualifiedCount: 0,
+      };
+    }
+  },
+});
+═══════════════════════════════════════════════════════════
+WORKFLOW FINAL (ordre des steps) :
+initializeDatabase
+searchGooglePlaces (Track A - API officielle)
+scrapeGoogleSearchSerpAPI (Track B - SerpAPI)
+scrapeSpecializedSites (Track C)
+consolidateFirms (déduplication)
+scrapeFirmWebsites (NOUVEAU - scraping approfondi)
+qualifyWithDustBatch (NOUVEAU - qualification batch)
+writeToDB
+exportCSV
+sendEmailSummary
+═══════════════════════════════════════════════════════════
+RÉSULTAT ATTENDU après implémentation :
+Track A + B + C : 30 firmes découvertes
+Scraping approfondi : 25-28 sites scrapés avec succès (contenu complet)
+Qualification Dust : 1 seul appel API, ~10 secondes
+Prospects qualifiés : 15-25 cabinets (score >= 3)
+Temps total : ~10 minutes (au lieu de 2h30)
+Pas de rate limiting
+Implémente ces modifications et relance un test complet.
