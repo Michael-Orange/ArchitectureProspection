@@ -15,26 +15,29 @@ Automated bi-weekly Mastra/Inngest workflow that discovers and qualifies ecologi
 - `src/mastra/index.ts` — Main Mastra instance, cron registration, server config
 - `src/mastra/agents/agent.ts` — Anthropic-powered prospecting agent with all tools
 - `src/mastra/workflows/workflow.ts` — 8-step sequential workflow
-- `src/mastra/tools/prospectingTools.ts` — Google Places, Google Search, specialized sites, email extraction, CSV generation, email sending
-- `src/mastra/tools/dustAiTool.ts` — Dust AI qualification tool (score 1-5)
+- `src/mastra/tools/prospectingTools.ts` — Google Places API, SerpAPI Search, specialized sites, email extraction, CSV generation, email sending
+- `src/mastra/tools/dustAiTool.ts` — Dust AI qualification tool (score 1-5, with retry for rate limits)
+- `src/mastra/tools/gmailClient.ts` — Gmail OAuth client (getUncachableGmailClient)
 - `src/mastra/storage/index.ts` — Shared PostgreSQL storage
 - `src/mastra/inngest/index.ts` — Inngest integration (createStep, createWorkflow)
 - `src/triggers/cronTriggers.ts` — Cron trigger registration
 
 ## Workflow Steps
 1. Initialize database
-2. Search Google Places (5 cities x 4 queries)
-3. Scrape Google Search (7 eco-focused queries)
-4. Extract from specialized sites (Aga Khan, CRAterre, LafargeHolcim, ASF, Afrik21)
+2. Track A: Google Places API (6 country-level queries for architecture firms in Senegal)
+3. Track B: SerpAPI Google Search (5 eco-focused queries with specific material keywords)
+4. Track C: Specialized sites (Aga Khan, CRAterre, LafargeHolcim, ASF, Afrik21)
 5. Consolidate & deduplicate
-6. Process each firm (extract emails + Dust AI qualify)
+6. Process each firm (extract emails + Dust AI qualify with 5s delay between calls + retry on rate limit)
 7. Generate CSV (score >= 3 only)
 8. Send email summary to michael@filtreplante.com
 
 ## Environment Variables Required
 - `AI_INTEGRATIONS_ANTHROPIC_API_KEY` — Replit AI Integration (configured)
 - `AI_INTEGRATIONS_ANTHROPIC_BASE_URL` — Replit AI Integration (configured)
-- `DUST_API_KEY` — Dust AI API key (needs valid key)
+- `GOOGLE_PLACES_API_KEY` — Google Places API key (configured)
+- `SERPAPI` — SerpAPI key for Google Search (configured, 250 free/month)
+- `DUST_API_KEY` — Dust AI API key (configured)
 - `DUST_WORKSPACE_ID` — Default: 3OUdFWdJIF
 - `DUST_AGENT_ID` — Default: 3hKwn579Sc
 - `DATABASE_URL` — PostgreSQL (configured)

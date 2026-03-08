@@ -35,7 +35,13 @@ export const searchGooglePlacesTool = createTool({
   }),
   execute: async (inputData, context) => {
     const logger = context?.mastra?.getLogger();
-    logger?.info("🔍 [searchGooglePlaces] Searching for architecture firms in Senegal...");
+    logger?.info("🔍 [searchGooglePlaces] Searching via Google Places API...");
+
+    const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+    if (!apiKey) {
+      logger?.error("❌ [searchGooglePlaces] GOOGLE_PLACES_API_KEY not set");
+      return { firms: [], count: 0 };
+    }
 
     const queries = [
       "cabinet architecture Sénégal",
@@ -47,58 +53,80 @@ export const searchGooglePlacesTool = createTool({
     ];
 
     const firms: Array<{name: string; address?: string; phone?: string; website?: string; source: string}> = [];
+    const seenDomains = new Set<string>();
 
     for (const query of queries) {
-        try {
-          const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&num=10&hl=fr`;
-          logger?.info(`🔍 [searchGooglePlaces] Searching: ${query}`);
+      try {
+        const placesUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?` +
+          `query=${encodeURIComponent(query)}` +
+          `&key=${apiKey}` +
+          `&language=fr`;
 
-          const ua = getRandomUA();
-          logger?.info(`   🔄 Using UA: ${ua.substring(0, 40)}...`);
-          const response = await fetch(searchUrl, {
-            headers: {
-              "User-Agent": ua,
-              "Accept-Language": "fr-FR,fr;q=0.9",
-              "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            },
-          });
+        logger?.info(`🔍 [searchGooglePlaces] Query: ${query}`);
+        const response = await fetch(placesUrl);
+        const data = await response.json();
 
-          if (response.ok) {
-            const html = await response.text();
-            const urlMatches = html.match(/href="\/url\?q=(https?:\/\/[^&"]+)/g);
-            if (urlMatches) {
-              for (const match of urlMatches.slice(0, 3)) {
-                const url = decodeURIComponent(match.replace('href="/url?q=', ""));
-                if (!url.includes("google.") && !url.includes("youtube.") && !url.includes("wikipedia.")) {
-                  try {
-                    const domain = new URL(url).hostname.replace("www.", "");
-                    if (!firms.find(f => f.website && f.website.includes(domain))) {
-                      firms.push({
-                        name: domain,
-                        address: "Sénégal",
-                        website: url,
-                        source: "Google Places",
-                      });
-                    }
-                  } catch { /* skip invalid URL */ }
-                }
-              }
-            }
-          }
-          await randomDelay(10000, 15000);
-        } catch (err) {
-          logger?.warn(`⚠️ [searchGooglePlaces] Error: ${err}`);
+        if (data.status !== "OK" && data.status !== "ZERO_RESULTS") {
+          logger?.warn(`⚠️ [searchGooglePlaces] API status: ${data.status} - ${data.error_message || ""}`);
+          continue;
         }
+
+        logger?.info(`   📍 Got ${(data.results || []).length} places`);
+
+        for (const place of data.results || []) {
+          try {
+            const detailsUrl = `https://maps.googleapis.com/maps/api/place/details/json?` +
+              `place_id=${place.place_id}` +
+              `&fields=name,formatted_address,website,formatted_phone_number` +
+              `&key=${apiKey}`;
+
+            const detailsResponse = await fetch(detailsUrl);
+            const details = await detailsResponse.json();
+
+            if (details.status !== "OK") continue;
+
+            const r = details.result;
+            const website = r.website || "";
+            let domain = "";
+
+            if (website) {
+              try {
+                domain = new URL(website).hostname.replace("www.", "");
+              } catch { /* skip */ }
+            }
+
+            if (domain && seenDomains.has(domain)) continue;
+            if (domain) seenDomains.add(domain);
+
+            firms.push({
+              name: r.name || place.name,
+              address: r.formatted_address || place.formatted_address || "Sénégal",
+              phone: r.formatted_phone_number || undefined,
+              website: website || undefined,
+              source: "Google Places API",
+            });
+
+            logger?.info(`   ✅ ${r.name} | ${website || "no website"}`);
+            await new Promise(r => setTimeout(r, 500));
+          } catch (err) {
+            logger?.warn(`   ⚠️ Detail fetch error: ${err}`);
+          }
+        }
+
+        await new Promise(r => setTimeout(r, 1000));
+      } catch (err) {
+        logger?.warn(`⚠️ [searchGooglePlaces] Error for "${query}": ${err}`);
+      }
     }
 
-    logger?.info(`✅ [searchGooglePlaces] Found ${firms.length} firms`);
+    logger?.info(`✅ [searchGooglePlaces] Found ${firms.length} unique firms`);
     return { firms, count: firms.length };
   },
 });
 
 export const scrapeGoogleSearchTool = createTool({
   id: "scrape-google-search",
-  description: "Scrape Google Search with targeted eco-friendly architecture queries for Senegal",
+  description: "Search for eco-focused architecture firms in Senegal using SerpAPI",
   inputSchema: z.object({
     placeholder: z.string().optional().describe("Placeholder"),
   }),
@@ -113,7 +141,13 @@ export const scrapeGoogleSearchTool = createTool({
   }),
   execute: async (inputData, context) => {
     const logger = context?.mastra?.getLogger();
-    logger?.info("🔍 [scrapeGoogleSearch] Scraping with eco queries...");
+    logger?.info("🔍 [serpApiSearch] Searching via SerpAPI...");
+
+    const apiKey = process.env.SERPAPI;
+    if (!apiKey) {
+      logger?.error("❌ [serpApiSearch] SERPAPI key not set");
+      return { firms: [], count: 0 };
+    }
 
     const ecoQueries = [
       'architecte "BTC" OR "brique de terre comprimée" Sénégal',
@@ -123,47 +157,53 @@ export const scrapeGoogleSearchTool = createTool({
       '"CRAterre" OR "architecture en terre" Sénégal',
     ];
 
+    const excludeDomains = ["wikipedia", "archdaily", "pinterest", "facebook", "linkedin", "youtube", "twitter", "instagram"];
     const firms: Array<{name: string; website?: string; snippet?: string; source: string}> = [];
+    const seenDomains = new Set<string>();
 
     for (const query of ecoQueries) {
       try {
-        const ua = getRandomUA();
-        logger?.info(`🔍 [scrapeGoogleSearch] Query: ${query}`);
-        logger?.info(`   🔄 Using UA: ${ua.substring(0, 40)}...`);
-        const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&num=10&hl=fr`;
+        const serpUrl = `https://serpapi.com/search.json?q=${encodeURIComponent(query)}&api_key=${apiKey}&num=10`;
 
-        const response = await fetch(searchUrl, {
-          headers: {
-            "User-Agent": ua,
-            "Accept-Language": "fr-FR,fr;q=0.9",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-          },
-        });
+        logger?.info(`🔍 [serpApiSearch] Query: ${query}`);
+        const response = await fetch(serpUrl);
+        const data = await response.json();
 
-        if (response.ok) {
-          const html = await response.text();
-          const urlMatches = html.match(/href="\/url\?q=(https?:\/\/[^&"]+)/g);
-          if (urlMatches) {
-            for (const match of urlMatches.slice(0, 5)) {
-              const url = decodeURIComponent(match.replace('href="/url?q=', ""));
-              if (!url.includes("google.") && !url.includes("youtube.") && !url.includes("wikipedia.")) {
-                try {
-                  const domain = new URL(url).hostname.replace("www.", "");
-                  if (!firms.find(f => f.website && f.website.includes(domain))) {
-                    firms.push({ name: domain, website: url, source: "Google Search" });
-                  }
-                } catch { /* skip */ }
-              }
-            }
-          }
+        if (data.error) {
+          logger?.warn(`⚠️ [serpApiSearch] API error: ${data.error}`);
+          continue;
         }
-        await randomDelay(10000, 15000);
+
+        const results = data.organic_results || [];
+        logger?.info(`   📄 Got ${results.length} organic results`);
+
+        for (const result of results) {
+          try {
+            const url = new URL(result.link);
+            const domain = url.hostname.replace("www.", "");
+
+            if (excludeDomains.some(d => domain.includes(d))) continue;
+            if (seenDomains.has(domain)) continue;
+            seenDomains.add(domain);
+
+            firms.push({
+              name: result.title || domain,
+              website: result.link,
+              snippet: result.snippet || "",
+              source: "SerpAPI Google Search",
+            });
+
+            logger?.info(`   ✅ ${result.title || domain}`);
+          } catch { /* skip invalid URL */ }
+        }
+
+        await new Promise(r => setTimeout(r, 1000));
       } catch (err) {
-        logger?.warn(`⚠️ [scrapeGoogleSearch] Error: ${err}`);
+        logger?.warn(`⚠️ [serpApiSearch] Error for query: ${err}`);
       }
     }
 
-    logger?.info(`✅ [scrapeGoogleSearch] Found ${firms.length} firms`);
+    logger?.info(`✅ [serpApiSearch] Found ${firms.length} unique firms`);
     return { firms, count: firms.length };
   },
 });

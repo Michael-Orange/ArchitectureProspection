@@ -72,35 +72,50 @@ ${truncatedContent}
 Réponds UNIQUEMENT avec un objet JSON valide (sans markdown):
 {"score": <1-5>, "pertinent": <true/false>, "raison": "<texte>", "projet_recent": "<texte ou null>", "typologies": ["<type>"], "langue": "<fr ou en>"}`;
 
-      const conversationResponse = await fetch(
-        `https://dust.tt/api/v1/w/${DUST_WORKSPACE_ID}/assistant/conversations`,
-        {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${DUST_API_KEY}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            title: `Qualification: ${firmName}`,
-            visibility: "unlisted",
-            message: {
-              content: promptContent,
-              mentions: [{ configurationId: DUST_AGENT_ID }],
-              context: {
-                timezone: "UTC",
-                username: "automation",
-                email: "automation@filtreplante.com",
-                fullName: "Prospecting Automation",
-                profilePictureUrl: null,
-              },
+      let conversationResponse: Response | null = null;
+      for (let retry = 0; retry < 3; retry++) {
+        conversationResponse = await fetch(
+          `https://dust.tt/api/v1/w/${DUST_WORKSPACE_ID}/assistant/conversations`,
+          {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${DUST_API_KEY}`,
+              "Content-Type": "application/json",
             },
-          }),
-        }
-      );
+            body: JSON.stringify({
+              title: `Qualification: ${firmName}`,
+              visibility: "unlisted",
+              message: {
+                content: promptContent,
+                mentions: [{ configurationId: DUST_AGENT_ID }],
+                context: {
+                  timezone: "UTC",
+                  username: "automation",
+                  email: "automation@filtreplante.com",
+                  fullName: "Prospecting Automation",
+                  profilePictureUrl: null,
+                },
+              },
+            }),
+          }
+        );
 
-      if (!conversationResponse.ok) {
+        if (conversationResponse.ok) break;
+
+        if (conversationResponse.status === 403 || conversationResponse.status === 429) {
+          const waitTime = (retry + 1) * 10;
+          logger?.warn(`⚠️ [dustAi] Rate limited (${conversationResponse.status}), retrying in ${waitTime}s (attempt ${retry + 1}/3)`);
+          await new Promise(r => setTimeout(r, waitTime * 1000));
+          continue;
+        }
+
         const errorText = await conversationResponse.text();
         throw new Error(`Dust API ${conversationResponse.status}: ${errorText.substring(0, 200)}`);
+      }
+
+      if (!conversationResponse || !conversationResponse.ok) {
+        const errorText = conversationResponse ? await conversationResponse.text() : "No response";
+        throw new Error(`Dust API failed after 3 retries: ${errorText.substring(0, 200)}`);
       }
 
       const conversationData = await conversationResponse.json();

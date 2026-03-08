@@ -243,6 +243,10 @@ const processArchitectureFirm = createStep({
       logger?.info(`   Found ${emails.length} email(s)`);
 
       logger?.info(`   🤖 Qualifying with Dust AI...`);
+      if (i > 0) {
+        logger?.info(`   ⏳ Waiting 5s before Dust API call (rate limit)...`);
+        await new Promise(r => setTimeout(r, 5000));
+      }
       const qualResult = await qualifyFirmWithDustAiTool.execute(
         {
           firmName,
@@ -356,7 +360,7 @@ Résultats:
 - Cabinets qualifiés (score >= 3): ${inputData.qualifiedCount}
 - Taux de qualification: ${qualRate}%
 
-Sources: Google Places, Google Search, Aga Khan Award, CRAterre, LafargeHolcim Foundation, Architecture sans Frontières, Afrik21
+Sources: Google Places API, SerpAPI Google Search, Aga Khan Award, CRAterre, LafargeHolcim Foundation, Architecture sans Frontières, Afrik21
 
 Qualification Dust AI (score 1-5):
 - 1-2: Non qualifié
