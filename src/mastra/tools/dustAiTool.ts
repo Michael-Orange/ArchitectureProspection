@@ -31,7 +31,7 @@ export const qualifyFirmWithDustAiTool = createTool({
     try { emailsList = JSON.parse(inputData.emails); } catch { emailsList = []; }
 
     const DUST_API_KEY = process.env.DUST_API_KEY;
-    const DUST_WORKSPACE_ID = process.env.DUST_WORKSPACE_ID || "3QJdFW4JIF";
+    const DUST_WORKSPACE_ID = process.env.DUST_WORKSPACE_ID || "3OUdFWdJIF";
     const DUST_AGENT_ID = process.env.DUST_AGENT_ID || "3hKwn579Sc";
 
     logger?.info(`🤖 [dustAi] Qualifying: ${firmName}`);

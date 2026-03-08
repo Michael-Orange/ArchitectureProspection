@@ -35,7 +35,7 @@ Automated bi-weekly Mastra/Inngest workflow that discovers and qualifies ecologi
 - `AI_INTEGRATIONS_ANTHROPIC_API_KEY` — Replit AI Integration (configured)
 - `AI_INTEGRATIONS_ANTHROPIC_BASE_URL` — Replit AI Integration (configured)
 - `DUST_API_KEY` — Dust AI API key (needs valid key)
-- `DUST_WORKSPACE_ID` — Default: 3QJdFW4JIF
+- `DUST_WORKSPACE_ID` — Default: 3OUdFWdJIF
 - `DUST_AGENT_ID` — Default: 3hKwn579Sc
 - `DATABASE_URL` — PostgreSQL (configured)
 - `EMAIL_RECIPIENT` — Default: michael@filtreplante.com
