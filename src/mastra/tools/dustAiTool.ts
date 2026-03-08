@@ -1,202 +1,211 @@
-import { createTool } from '@mastra/core';
-  import { z } from 'zod';
+import { createTool } from "@mastra/core/tools";
+import { z } from "zod";
 
-  /**
-   * Tool to qualify a firm using Dust AI
-   * This tool sends website content to Dust AI for ecological architecture qualification
-   */
-  export const qualifyFirmWithDustAiTool = createTool({
-    id: 'qualify-firm-with-dust-ai',
-    description: 'Analyze firm website content using Dust AI to determine ecological commitment score',
-    inputSchema: z.object({
-      firmName: z.string().describe('Name of the architecture firm'),
-      websiteUrl: z.string().describe('URL of the firm website'),
-      websiteContent: z.string().describe('Extracted text content from the website'),
-      emails: z.array(z.string()).describe('Contact emails found on the website'),
-    }),
-    outputSchema: z.object({
-      firmName: z.string(),
-      isQualified: z.boolean(),
-      qualificationScore: z.number().min(0).max(10),
-      ecoKeywords: z.array(z.string()),
-      reasoning: z.string().optional(),
-    }),
-    execute: async ({ context }) => {
-      const { firmName, websiteUrl, websiteContent, emails } = context;
-      
-      const DUST_API_KEY = process.env.DUST_API_KEY;
-      const DUST_WORKSPACE_ID = process.env.DUST_WORKSPACE_ID;
-      const DUST_AGENT_ID = process.env.DUST_AGENT_ID || 'dust'; // Default agent
-      
-      if (!DUST_API_KEY || !DUST_WORKSPACE_ID) {
-        console.error('❌ DUST_API_KEY and DUST_WORKSPACE_ID must be set in environment variables');
-        return {
-          firmName,
-          isQualified: false,
-          qualificationScore: 0,
-          ecoKeywords: [],
-          reasoning: 'Missing Dust AI credentials',
-        };
-      }
-      
-      try {
-        const truncatedContent = websiteContent.length > 3000 
-          ? websiteContent.substring(0, 3000) + '...' 
-          : websiteContent;
-        
-        // Create a conversation with Dust AI to analyze the firm
-        const conversationResponse = await fetch(
-          `https://dust.tt/api/v1/w/${DUST_WORKSPACE_ID}/assistant/conversations`,
-          {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${DUST_API_KEY}`,
-              'Content-Type': 'application/json',
+export const qualifyFirmWithDustAiTool = createTool({
+  id: "qualify-firm-with-dust-ai",
+  description: "Qualify a firm using Dust AI agent. Returns score 1-5 with qualification details.",
+  inputSchema: z.object({
+    firmName: z.string().describe("Name of the architecture firm"),
+    websiteUrl: z.string().describe("URL of the firm website"),
+    websiteContent: z.string().describe("Extracted text content from the website"),
+    emails: z.string().describe("JSON array of contact emails"),
+    source: z.string().optional().describe("Source where the firm was discovered"),
+  }),
+  outputSchema: z.object({
+    firmName: z.string(),
+    websiteUrl: z.string(),
+    emails: z.array(z.string()),
+    source: z.string(),
+    score: z.number(),
+    pertinent: z.boolean(),
+    raison: z.string(),
+    projet_recent: z.string().nullable(),
+    typologies: z.array(z.string()),
+    langue: z.string(),
+  }),
+  execute: async (inputData, context) => {
+    const logger = context?.mastra?.getLogger();
+    const { firmName, websiteUrl, websiteContent, source } = inputData;
+
+    let emailsList: string[] = [];
+    try { emailsList = JSON.parse(inputData.emails); } catch { emailsList = []; }
+
+    const DUST_API_KEY = process.env.DUST_API_KEY;
+    const DUST_WORKSPACE_ID = process.env.DUST_WORKSPACE_ID || "3QJdFW4JIF";
+    const DUST_AGENT_ID = process.env.DUST_AGENT_ID || "3hKwn579Sc";
+
+    logger?.info(`🤖 [dustAi] Qualifying: ${firmName}`);
+
+    if (!DUST_API_KEY) {
+      logger?.error("❌ [dustAi] DUST_API_KEY not set");
+      return {
+        firmName, websiteUrl, emails: emailsList, source: source || "",
+        score: 1, pertinent: false, raison: "DUST_API_KEY not configured",
+        projet_recent: null, typologies: [], langue: "fr",
+      };
+    }
+
+    try {
+      const truncatedContent = websiteContent.length > 4000
+        ? websiteContent.substring(0, 4000) + "..."
+        : websiteContent;
+
+      const promptContent = `Analyse cette entreprise d'architecture sénégalaise et évalue son engagement écologique.
+
+**Entreprise:** ${firmName}
+**Site web:** ${websiteUrl}
+**Emails:** ${emailsList.join(", ") || "Non trouvé"}
+**Source:** ${source || "Inconnu"}
+
+**Contenu du site web:**
+${truncatedContent}
+
+**Échelle de notation (1-5):**
+- Score 1: Aucune mention d'écologie/durabilité
+- Score 2: Mentions vagues, pas de projets concrets
+- Score 3: Quelques références écologiques, 1-2 projets identifiables (QUALIFIÉ)
+- Score 4: Engagement écologique clair, plusieurs projets durables (QUALIFIÉ)
+- Score 5: Spécialiste reconnu en architecture écologique (QUALIFIÉ)
+
+**Critères:** BTC, pisé, terre crue, bioclimatique, HQE, LEED, BREEAM, matériaux locaux, énergies renouvelables
+
+Réponds UNIQUEMENT avec un objet JSON valide (sans markdown):
+{"score": <1-5>, "pertinent": <true/false>, "raison": "<texte>", "projet_recent": "<texte ou null>", "typologies": ["<type>"], "langue": "<fr ou en>"}`;
+
+      const conversationResponse = await fetch(
+        `https://dust.tt/api/v1/w/${DUST_WORKSPACE_ID}/assistant/conversations`,
+        {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${DUST_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            title: `Qualification: ${firmName}`,
+            visibility: "unlisted",
+            message: {
+              content: promptContent,
+              mentions: [{ configurationId: DUST_AGENT_ID }],
+              context: {
+                timezone: "UTC",
+                username: "automation",
+                email: "automation@filtreplante.com",
+                fullName: "Prospecting Automation",
+                profilePictureUrl: null,
+              },
             },
-            body: JSON.stringify({
-              title: `Qualification: ${firmName}`,
-              visibility: 'unlisted',
-              message: {
-                content: `Analyse cette entreprise d'architecture sénégalaise et évalue son engagement écologique sur une échelle de 0 à 10.
-
-  **Entreprise:** ${firmName}
-  **Site web:** ${websiteUrl}
-  **Emails de contact:** ${emails.join(', ')}
-
-  **Contenu du site web:**
-  ${truncatedContent}
-
-  **Critères de notation (0-10):**
-  - Mention explicite de pratiques écologiques/durables: +3 points
-  - Portfolio montrant des projets éco-responsables: +2 points
-  - Certifications (HQE, LEED, BREEAM, etc.): +2 points
-  - Utilisation de matériaux locaux/durables mentionnée: +1 point
-  - Approche bioclimatique/passive: +1 point
-  - Intégration d'énergies renouvelables: +1 point
-
-  **Score minimum de qualification:** 5/10
-
-  Réponds au format JSON suivant:
-  {
-    "score": <nombre entre 0 et 10>,
-    "isQualified": <true si score >= 5, false sinon>,
-    "ecoKeywords": [<liste des mots-clés écologiques trouvés>],
-    "reasoning": "<explication courte du score>"
-  }`,
-                mentions: [],
-                context: {
-                  timezone: 'UTC',
-                  username: 'automation',
-                  email: 'automation@filtreplante.com',
-                  fullName: 'Prospecting Automation',
-                  profilePictureUrl: null,
-                },
-              },
-            }),
-          }
-        );
-        
-        if (!conversationResponse.ok) {
-          throw new Error(`Dust API error: ${conversationResponse.status} ${conversationResponse.statusText}`);
+          }),
         }
-        
-        const conversationData = await conversationResponse.json();
-        const conversationId = conversationData.conversation.sId;
-        
-        // Wait for the agent response by polling events
-        let attempts = 0;
-        const maxAttempts = 30;
-        let agentResponse = '';
-        
-        while (attempts < maxAttempts) {
-          await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds
-          
-          const eventsResponse = await fetch(
-            `https://dust.tt/api/v1/w/${DUST_WORKSPACE_ID}/assistant/conversations/${conversationId}/events`,
+      );
+
+      if (!conversationResponse.ok) {
+        const errorText = await conversationResponse.text();
+        throw new Error(`Dust API ${conversationResponse.status}: ${errorText.substring(0, 200)}`);
+      }
+
+      const conversationData = await conversationResponse.json();
+      const conversationId = conversationData.conversation?.sId;
+
+      if (!conversationId) {
+        throw new Error("No conversation ID returned from Dust API");
+      }
+
+      logger?.info(`🤖 [dustAi] Conversation created: ${conversationId}, waiting for response...`);
+
+      let agentResponse = "";
+      for (let attempt = 0; attempt < 45; attempt++) {
+        await new Promise(r => setTimeout(r, 2000));
+
+        try {
+          const messagesResponse = await fetch(
+            `https://dust.tt/api/v1/w/${DUST_WORKSPACE_ID}/assistant/conversations/${conversationId}`,
             {
-              headers: {
-                'Authorization': `Bearer ${DUST_API_KEY}`,
-                'Accept': 'application/json',
-              },
+              headers: { "Authorization": `Bearer ${DUST_API_KEY}` },
             }
           );
-          
-          if (eventsResponse.ok) {
-            const events = await eventsResponse.json();
-            
-            // Look for agent message content
-            const agentMessages = events.events?.filter((e: any) => 
-              e.type === 'agent_message' && e.content
-            );
-            
-            if (agentMessages && agentMessages.length > 0) {
-              const lastMessage = agentMessages[agentMessages.length - 1];
-              agentResponse = lastMessage.content || '';
-              break;
+
+          if (messagesResponse.ok) {
+            const messagesData = await messagesResponse.json();
+            const conversation = messagesData.conversation;
+
+            if (conversation?.content) {
+              for (const messageGroup of conversation.content) {
+                for (const msg of messageGroup) {
+                  if (msg.type === "agent_message" && msg.status === "succeeded" && msg.content) {
+                    agentResponse = msg.content;
+                    break;
+                  }
+                }
+                if (agentResponse) break;
+              }
             }
           }
-          
-          attempts++;
+        } catch (err) {
+          logger?.warn(`⚠️ [dustAi] Polling error: ${err}`);
         }
-        
-        if (!agentResponse) {
-          console.warn(`⚠️  No response from Dust AI for ${firmName}`);
-          return {
-            firmName,
-            isQualified: false,
-            qualificationScore: 0,
-            ecoKeywords: [],
-            reasoning: 'No response from Dust AI',
-          };
-        }
-        
-        // Parse JSON response from agent
-        const jsonMatch = agentResponse.match(/\{[^}]*"score"[^}]*\}/);
-        if (jsonMatch) {
-          const result = JSON.parse(jsonMatch[0]);
-          return {
-            firmName,
-            isQualified: result.isQualified || result.score >= 5,
-            qualificationScore: result.score || 0,
-            ecoKeywords: result.ecoKeywords || [],
-            reasoning: result.reasoning,
-          };
-        }
-        
-        // Fallback: basic keyword analysis if JSON parsing fails
-        const ecoKeywords: string[] = [];
-        const keywords = [
-          'écologie', 'durable', 'sustainable', 'vert', 'green',
-          'bioclimatique', 'passive', 'HQE', 'LEED', 'BREEAM',
-          'éco-construction', 'matériaux locaux', 'énergies renouvelables'
-        ];
-        
-        keywords.forEach(keyword => {
-          if (websiteContent.toLowerCase().includes(keyword.toLowerCase())) {
-            ecoKeywords.push(keyword);
-          }
-        });
-        
-        const score = Math.min(10, ecoKeywords.length);
-        
+
+        if (agentResponse) break;
+      }
+
+      if (!agentResponse) {
+        logger?.warn(`⚠️ [dustAi] No response from Dust AI for ${firmName}`);
         return {
-          firmName,
-          isQualified: score >= 5,
-          qualificationScore: score,
-          ecoKeywords,
-          reasoning: agentResponse,
-        };
-        
-      } catch (error) {
-        console.error(`Error qualifying ${firmName} with Dust AI:`, error);
-        return {
-          firmName,
-          isQualified: false,
-          qualificationScore: 0,
-          ecoKeywords: [],
-          reasoning: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          firmName, websiteUrl, emails: emailsList, source: source || "",
+          score: 1, pertinent: false, raison: "Timeout: no Dust AI response",
+          projet_recent: null, typologies: [], langue: "fr",
         };
       }
-    },
-  });
-  
+
+      logger?.info(`🤖 [dustAi] Response received for ${firmName}`);
+
+      let jsonText = agentResponse.trim();
+      jsonText = jsonText.replace(/```json\s*/g, "").replace(/```\s*/g, "");
+      const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
+
+      if (jsonMatch) {
+        try {
+          const result = JSON.parse(jsonMatch[0]);
+          const score = Math.max(1, Math.min(5, result.score || 1));
+          const pertinent = result.pertinent !== undefined ? result.pertinent : score >= 3;
+
+          logger?.info(`✅ [dustAi] ${firmName}: Score ${score}/5, Qualified: ${pertinent}`);
+
+          return {
+            firmName, websiteUrl, emails: emailsList, source: source || "",
+            score, pertinent,
+            raison: result.raison || "Qualification automatique",
+            projet_recent: result.projet_recent || null,
+            typologies: Array.isArray(result.typologies) ? result.typologies : [],
+            langue: (result.langue === "en" ? "en" : "fr"),
+          };
+        } catch (parseErr) {
+          logger?.error(`❌ [dustAi] JSON parse error for ${firmName}: ${parseErr}`);
+        }
+      }
+
+      logger?.warn(`⚠️ [dustAi] Fallback keyword analysis for ${firmName}`);
+      const keywords = ["écologie", "durable", "sustainable", "bioclimatique", "HQE", "LEED", "BTC", "pisé", "terre"];
+      let found = 0;
+      const foundKeywords: string[] = [];
+      keywords.forEach(kw => {
+        if (websiteContent.toLowerCase().includes(kw.toLowerCase())) { found++; foundKeywords.push(kw); }
+      });
+      const fallbackScore = Math.min(5, Math.max(1, Math.ceil(found / 2)));
+
+      return {
+        firmName, websiteUrl, emails: emailsList, source: source || "",
+        score: fallbackScore, pertinent: fallbackScore >= 3,
+        raison: `Fallback analysis. Keywords: ${foundKeywords.join(", ")}`,
+        projet_recent: null, typologies: [], langue: "fr",
+      };
+    } catch (err) {
+      logger?.error(`❌ [dustAi] Error qualifying ${firmName}: ${err}`);
+      return {
+        firmName, websiteUrl, emails: emailsList, source: source || "",
+        score: 1, pertinent: false,
+        raison: `Error: ${err instanceof Error ? err.message : String(err)}`,
+        projet_recent: null, typologies: [], langue: "fr",
+      };
+    }
+  },
+});

@@ -3,36 +3,46 @@
   ## 📋 Description
 
   Cette automation découvre et qualifie automatiquement les cabinets d'architecture écologique au Sénégal.
-  Elle s'exécute de manière bi-hebdomadaire et envoie un rapport CSV par email.
+  Elle s'exécute de manière bi-hebdomadaire (chaque **samedi à 15h00 UTC**) et envoie un rapport CSV par email.
 
   ## 🤖 Utilisation de Dust AI
 
   Ce projet utilise **Dust AI** pour la qualification intelligente des cabinets d'architecture basée sur leur engagement écologique.
 
-  ### Pourquoi Dust AI ?
+  ### Score de qualification (1-5)
 
-  Dust AI analyse le contenu des sites web des cabinets et évalue leur engagement écologique selon des critères précis :
-  - Mention explicite de pratiques écologiques/durables
-  - Portfolio montrant des projets éco-responsables
-  - Certifications (HQE, LEED, BREEAM, etc.)
-  - Utilisation de matériaux locaux/durables
+  Dust AI évalue chaque cabinet sur une échelle de **1 à 5** :
+
+  - **Score 1-2** : Non qualifié (pas d'engagement écologique clair)
+  - **Score 3** : Quelques références écologiques, 1-2 projets identifiables ✅ **QUALIFIÉ**
+  - **Score 4** : Engagement écologique clair, plusieurs projets durables ✅ **QUALIFIÉ**
+  - **Score 5** : Spécialiste reconnu en architecture écologique ✅ **QUALIFIÉ**
+
+  **Seuls les cabinets avec score >= 3 sont exportés dans le CSV final.**
+
+  ### Format de réponse Dust AI
+
+  L'agent Dust retourne un JSON structuré :
+
+  ```json
+  {
+    "score": 3,                              // 1 à 5
+    "pertinent": true,                       // true si score >= 3
+    "raison": "Texte explicatif du score",
+    "projet_recent": "Nom du projet" ou null,
+    "typologies": ["habitat", "équipement public"],
+    "langue": "fr" ou "en"
+  }
+  ```
+
+  ### Critères d'évaluation
+
+  - Projets éco-responsables dans le portfolio
+  - Certifications (HQE, LEED, BREEAM)
+  - Matériaux locaux/durables (BTC, pisé, terre)
   - Approche bioclimatique/passive
-  - Intégration d'énergies renouvelables
-
-  ### Configuration requise
-
-  1. **Créer un compte Dust AI** : https://dust.tt/
-  2. **Obtenir vos credentials** :
-     - `DUST_API_KEY` : Clé API de votre workspace Dust
-     - `DUST_WORKSPACE_ID` : ID de votre workspace Dust
-     - `DUST_AGENT_ID` (optionnel) : ID d'un agent spécifique à utiliser
-
-  3. **Ajouter les secrets dans Replit** :
-     - Ouvrez l'onglet "Secrets" (icône cadenas)
-     - Ajoutez ces variables d'environnement :
-       - `DUST_API_KEY` = votre_clé_api
-       - `DUST_WORKSPACE_ID` = votre_workspace_id
-       - `DUST_AGENT_ID` = votre_agent_id (optionnel)
+  - Énergies renouvelables
+  - Typologies : habitat, équipement public, tertiaire, industriel, infrastructure
 
   ## ⚙️ Configuration
 
@@ -42,108 +52,181 @@
   # Dust AI (REQUIS)
   DUST_API_KEY=sk-dust-xxxxx
   DUST_WORKSPACE_ID=w-xxxxx
-  DUST_AGENT_ID=agent-xxxxx  # Optionnel, par défaut utilise "dust"
+  DUST_AGENT_ID=agent-xxxxx  # Optionnel
 
   # Cron Schedule (OPTIONNEL)
-  SCHEDULE_CRON_EXPRESSION="0 9 * * 1"  # Défaut: Chaque lundi à 9h00 UTC
+  SCHEDULE_CRON_EXPRESSION="0 15 * * 6"  # Défaut: Samedi 15h00 UTC
 
-  # Google Places API (OPTIONNEL pour améliorer les résultats)
+  # Google Places API (OPTIONNEL)
   GOOGLE_PLACES_API_KEY=votre_clé_api
   ```
 
+  ### Configuration Dust AI
+
+  1. **Créer un compte** : https://dust.tt/
+  2. **Obtenir vos credentials** :
+     - Allez dans Settings > Workspace > API Keys
+     - Créez une nouvelle clé API
+     - Notez votre `WORKSPACE_ID` (visible dans l'URL : `https://dust.tt/w/[workspace_id]/...`)
+  3. **Ajouter dans Replit Secrets** :
+     - Ouvrez l'onglet "Secrets" (🔒)
+     - Ajoutez `DUST_API_KEY` et `DUST_WORKSPACE_ID`
+
   ### Fréquence d'exécution
 
-  Par défaut, l'automation s'exécute **chaque lundi à 9h00 UTC**.
+  Par défaut : **Chaque samedi à 15h00 UTC**
 
   Pour changer la fréquence, modifiez `SCHEDULE_CRON_EXPRESSION` :
-  - `"0 9 * * 1"` : Chaque lundi à 9h00
-  - `"0 9 1,15 * *"` : Le 1er et 15 de chaque mois à 9h00
-  - `"0 9 * * 0"` : Chaque dimanche à 9h00
-  - `"0 14 * * 3"` : Chaque mercredi à 14h00
+  - `"0 15 * * 6"` : Samedi 15h00 UTC (défaut)
+  - `"0 9 * * 1"` : Lundi 9h00 UTC
+  - `"0 15 1,15 * *"` : 1er et 15 du mois à 15h00 UTC
 
-  ## 🔄 Workflow
+  ## 🔄 Workflow (6 étapes)
 
-  L'automation suit ces étapes :
+  ### 1. Initialize Database
+  Préparation de la base de données PostgreSQL pour stocker les résultats.
 
-  1. **Query Google Places** : Recherche de cabinets d'architecture via l'API Google Places
-  2. **Scrape Google Search** : Recherche web avec des requêtes ciblées sur l'écologie
-  3. **Extract Specialized Sites** : Extraction depuis les annuaires spécialisés
-  4. **Consolidate Firms** : Déduplication et consolidation des résultats
-  5. **Extract Emails** (foreach) : Visite de chaque site web pour extraire les emails
-  6. **Qualify with Dust AI** (foreach) : Qualification intelligente avec Dust AI
-  7. **Store Results** : Sauvegarde des résultats dans la base de données
-  8. **Generate CSV** : Génération d'un rapport CSV
-  9. **Send Email** : Envoi du rapport à michael@filtreplante.com
+  ### 2. Parallel Discovery (3 tracks)
+  Découverte en parallèle via 3 sources :
+
+  #### Track A: Google Places API
+  Recherche de cabinets d'architecture au Sénégal via l'API Google Places.
+
+  #### Track B: Google Search
+  Recherche web avec requêtes ciblées :
+  - "architecture écologique Sénégal"
+  - "architecture durable Dakar"
+  - "éco-construction Sénégal"
+  - "BTC pisé architecture Sénégal"
+  - "architecture terre crue Sénégal"
+
+  #### Track C: Specialized Sites (BeautifulSoup)
+  Extraction depuis des sites spécialisés :
+  - **Aga Khan Award for Architecture** (akdn.org, archnet.org) - Projets primés en Afrique
+  - **CRAterre** (craterre.org) - Réseau mondial architecture en terre
+  - **LafargeHolcim Foundation** (lafargeholcim-foundation.org) - Prix construction durable
+  - **Architecture sans Frontières** (asf-france.com) - Projets en Afrique
+  - **Afrik21** (afrik21.africa) - Articles filtrés avec mots-clés : BTC, pisé, terre, bioclimatique
+
+  ### 3. Consolidate Firms
+  Déduplication des cabinets découverts (par URL du site web).
+
+  ### 4. Process Each Firm (Foreach - Concurrency 5)
+  Pour chaque cabinet découvert :
+  1. **Visite du site web** : extraction du contenu et des emails (contact, about, footer, équipe)
+  2. **Qualification Dust AI** : analyse intelligente → score 1-5
+  3. **Stockage database** : sauvegarde des résultats
+
+  ### 5. Generate CSV Report
+  Génération du CSV avec **uniquement les cabinets score >= 3**.
+
+  Colonnes du CSV :
+  - Nom, Site Web, Emails
+  - Score (1-5), Pertinent (true/false)
+  - Raison de la qualification
+  - Projet récent identifié
+  - Typologies (habitat, équipement, etc.)
+  - Langue (fr/en), Source de découverte
+
+  ### 6. Send Email Summary
+  Envoi du rapport à **michael@filtreplante.com** avec :
+  - Statistiques de découverte
+  - Taux de qualification
+  - Fichier CSV en pièce jointe
 
   ## 🧪 Test de l'automation
 
-  Pour tester l'automation manuellement sans attendre le cron :
+  Pour tester manuellement sans attendre le samedi :
 
   ```bash
   npx tsx tests/testCronAutomation.ts
   ```
 
-  Cela déclenchera immédiatement le workflow et vous pourrez voir les résultats.
+  Cela déclenche immédiatement le workflow complet et affiche les logs en temps réel.
 
-  ## 📊 Résultats
+  ## 📊 Résultats attendus
 
   Chaque exécution génère :
-  - **Un fichier CSV** : `qualified_prospects_YYYY-MM-DD.csv`
-  - **Un email récapitulatif** envoyé à michael@filtreplante.com
+  - **CSV** : `qualified_prospects_YYYY-MM-DD.csv` (score >= 3 uniquement)
+  - **Email** : Envoyé à michael@filtreplante.com avec statistiques et CSV
 
-  Le CSV contient :
-  - Nom du cabinet
-  - Site web
-  - Emails de contact
-  - Score de qualification (0-10)
-  - Mots-clés écologiques trouvés
-  - Localisation
+  Exemple de statistiques :
+  ```
+  Cabinets découverts : 45
+  Cabinets uniques : 38
+  Cabinets qualifiés (score >= 3) : 12
+  Taux de qualification : 32%
+  ```
 
-  ## 🚀 Déploiement
+  ## 🚀 Déploiement (Publishing)
 
-  Une fois testé, publiez l'automation :
+  Une fois testé :
 
-  1. Vérifiez que tous les secrets sont configurés
-  2. Testez avec `npx tsx tests/testCronAutomation.ts`
-  3. Cliquez sur "Deploy" dans Replit
-  4. L'automation s'exécutera automatiquement selon le cron défini
+  1. ✅ Vérifiez que `DUST_API_KEY` et `DUST_WORKSPACE_ID` sont configurés
+  2. 🧪 Testez avec `npx tsx tests/testCronAutomation.ts`
+  3. 🚀 Cliquez sur "Deploy" dans Replit
+  4. ⏰ L'automation s'exécutera automatiquement chaque samedi à 15h00 UTC
 
-  ## 📚 Documentation Dust AI
+  Après publication, testez dans l'onglet **"Playground"** de Replit.
 
-  - Documentation officielle : https://docs.dust.tt/
-  - API Reference : https://docs.dust.tt/reference/developer-platform-overview
-  - Quickstart : https://docs.dust.tt/reference/quickstart
-
-  ## 🛠️ Développement
-
-  Structure du projet :
+  ## 🛠️ Structure du projet
 
   ```
   src/
   ├── mastra/
   │   ├── agents/
-  │   │   └── ecoArchitectProspectingAgent.ts  # Agent principal
+  │   │   └── ecoArchitectProspectingAgent.ts
   │   ├── tools/
-  │   │   ├── dustAiTool.ts                    # Outil Dust AI
-  │   │   └── prospectingTools.ts              # Autres outils
+  │   │   ├── dustAiTool.ts              # Qualification Dust AI (1-5)
+  │   │   └── prospectingTools.ts        # Discovery, scraping, CSV, email
   │   ├── workflows/
-  │   │   └── ecoArchitectProspectingWorkflow.ts
-  │   └── index.ts                              # Configuration Mastra
+  │   │   └── ecoArchitectProspectingWorkflow.ts  # 6 steps
+  │   └── index.ts                        # Mastra config + cron
   └── triggers/
-      └── cronTriggers.ts                       # Configuration cron
+      └── cronTriggers.ts                 # Time-based trigger
   ```
 
-  ## ❓ Support
+  ## 📚 Documentation
 
-  Pour toute question ou problème :
-  1. Vérifiez que vos credentials Dust AI sont corrects
-  2. Consultez les logs dans la console Replit
-  3. Testez manuellement avec le script de test
+  - **Dust AI** : https://docs.dust.tt/
+  - **API Reference** : https://docs.dust.tt/reference/developer-platform-overview
+  - **Mastra Framework** : https://mastra.ai/
 
-  ## 📝 Notes
+  ## ❓ FAQ
 
-  - Les résultats sont stockés dans PostgreSQL pour un historique complet
-  - La qualification par Dust AI peut prendre quelques secondes par cabinet
-  - Le score minimum de qualification est 5/10
-  - Seuls les cabinets qualifiés apparaissent dans le rapport final
+  **Q: Pourquoi score 1-5 et pas 0-10 ?**
+  R: C'est le format standard de Dust AI pour la qualification. Plus simple et plus actionnable.
+
+  **Q: Pourquoi seulement score >= 3 dans le CSV ?**
+  R: Pour garantir la qualité des prospects. Scores 1-2 = pas d'engagement écologique clair.
+
+  **Q: Comment Dust AI qualifie-t-il ?**
+  R: Analyse du contenu du site web selon critères précis (projets, certifications, matériaux, etc.).
+
+  **Q: Que faire si Dust AI ne répond pas ?**
+  R: Le système a un fallback avec analyse par mots-clés écologiques.
+
+  **Q: Combien de temps prend une exécution ?**
+  R: 5-15 minutes selon le nombre de cabinets découverts (concurrency 5 pour la qualification).
+
+  ## 📝 Notes techniques
+
+  - **Scraping** : BeautifulSoup pour les sites spécialisés (pas Playwright pour l'instant)
+  - **Parallel execution** : Les 3 tracks de découverte s'exécutent en parallèle
+  - **Concurrency** : Foreach avec concurrency=5 pour optimiser le traitement
+  - **Database** : PostgreSQL via Mastra (LibSQL engine)
+  - **Email** : Via Replit Mail ou service configuré
+
+  ## 🆘 Support
+
+  En cas de problème :
+  1. Vérifiez les logs dans la console Replit
+  2. Confirmez que `DUST_API_KEY` et `DUST_WORKSPACE_ID` sont corrects
+  3. Testez Dust AI manuellement : https://dust.tt/
+  4. Vérifiez la connexion internet du Repl
+
+  ---
+
+  **Maintainer** : michael@filtreplante.com
+  **Last updated** : 2026-03-08
   

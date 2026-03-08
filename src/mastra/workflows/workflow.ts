@@ -1,203 +1,405 @@
-// Use Inngest-compatible versions for this project
-// These are initialized with init(inngest) to work with the Inngest workflow engine
 import { createStep, createWorkflow } from "../inngest";
 import { z } from "zod";
 import { automationAgent } from "../agents/agent";
+import {
+  searchGooglePlacesTool,
+  scrapeGoogleSearchTool,
+  extractFromSpecializedSitesTool,
+  processFirmWebsiteTool,
+  generateCsvTool,
+  sendEmailTool,
+} from "../tools/prospectingTools";
+import { qualifyFirmWithDustAiTool } from "../tools/dustAiTool";
 
-/**
- * Mastra Workflow with Mocked Steps
- *
- * MASTRA WORKFLOW GUIDE:
- * - Workflows orchestrate multiple steps in sequence
- * - Each step has typed inputs/outputs for reliability
- * - Steps can use agents, tools, or custom logic (conditionals, loops, etc)
- */
+const firmSchema = z.object({
+  name: z.string(),
+  address: z.string().optional(),
+  phone: z.string().optional(),
+  website: z.string().optional(),
+  snippet: z.string().optional(),
+  description: z.string().optional(),
+  source: z.string(),
+});
 
-/**
- * CALLING TOOLS IN WORKFLOW STEPS:
- * When calling tool.execute() in a step, you must narrow the return type before accessing properties.
- * tool.execute() returns `ValidationError | OutputType`, so check for errors first:
- *
- *     const result = await myTool.execute(input, { mastra });
- *     if ('error' in result && result.error) throw new Error(result.message);
- *     return { data: result.someProperty }; // Now typed correctly
- *
- * Note: Don't use `error` as a field name in tool output schemas (reserved for ValidationError).
- * Note: Step chaining with .then() requires `as any` casts due to Inngest type inference (see below).
- */
-
-/**
- * Step 1: Process with Agent
- * This step demonstrates how to use an agent within a workflow
- */
-const processWithAgent = createStep({
-  id: "process-with-agent",
-  description:
-    "Processes the input message using an AI agent with optional analysis", // Must contain a clear, concise description of what the step does.
-
-  // Define what this step expects as input
-  inputSchema: z.object({
-    message: z.string().describe("Message to process"),
-    includeAnalysis: z
-      .boolean()
-      .optional()
-      .describe("Whether to include detailed analysis"),
-  }),
-
-  // Defines what this step will output. Must match the inputSchema of the next step.
+const initializeDatabase = createStep({
+  id: "initialize-database",
+  description: "Initialize database and prepare for prospecting run",
+  inputSchema: z.object({}).passthrough(),
   outputSchema: z.object({
-    agentResponse: z.string(),
-    processedData: z
-      .object({
-        original: z.string(),
-        processed: z.string(),
-        timestamp: z.string(),
-      })
-      .optional(),
+    runDate: z.string(),
+    dbReady: z.boolean(),
   }),
-
-  // Step logic - mastra is available for logging and utilities
   execute: async ({ inputData, mastra }) => {
     const logger = mastra?.getLogger();
-    logger?.info("🚀 [Step 1] Processing with agent...");
+    logger?.info("💾 [Step 1] Initializing database...");
+    const runDate = new Date().toISOString();
+    logger?.info(`📅 [Step 1] Run date: ${runDate}`);
+    return { runDate, dbReady: true };
+  },
+});
 
-    // Construct a prompt for the agent
-    const prompt = `
-      Please process the following message using the example tool:
-      "${inputData.message}"
+const searchGooglePlaces = createStep({
+  id: "search-google-places",
+  description: "Search Google Places API for architecture firms in Senegal",
+  inputSchema: z.object({
+    runDate: z.string(),
+    dbReady: z.boolean(),
+  }),
+  outputSchema: z.object({
+    allFirmsJson: z.string(),
+    googlePlacesCount: z.number(),
+  }),
+  execute: async ({ inputData, mastra }) => {
+    const logger = mastra?.getLogger();
+    logger?.info("🔍 [Step 2A] Searching Google Places...");
 
-      ${inputData.includeAnalysis ? "Also provide a brief analysis of the results." : ""}
-    `;
+    const result = await searchGooglePlacesTool.execute({ placeholder: "" }, { mastra });
+    if ("error" in result && result.error) {
+      logger?.error(`❌ [Step 2A] Tool error: ${result.message}`);
+      return { allFirmsJson: "[]", googlePlacesCount: 0 };
+    }
 
-    // Call the agent using generate or stream
-    const response = await automationAgent.generate(
-      [{ role: "user", content: prompt }],
-      // We can add other properties, for instance the thread id keeps track of the message history.  Check Mastra docs for more information.
+    logger?.info(`✅ [Step 2A] Found ${result.count} firms from Google Places`);
+    return { allFirmsJson: JSON.stringify(result.firms), googlePlacesCount: result.count };
+  },
+});
+
+const scrapeGoogleSearch = createStep({
+  id: "scrape-google-search",
+  description: "Scrape Google Search with targeted eco-friendly queries",
+  inputSchema: z.object({
+    allFirmsJson: z.string(),
+    googlePlacesCount: z.number(),
+  }),
+  outputSchema: z.object({
+    allFirmsJson: z.string(),
+    googlePlacesCount: z.number(),
+    googleSearchCount: z.number(),
+  }),
+  execute: async ({ inputData, mastra }) => {
+    const logger = mastra?.getLogger();
+    logger?.info("🔍 [Step 2B] Scraping Google Search with eco queries...");
+
+    const result = await scrapeGoogleSearchTool.execute({ placeholder: "" }, { mastra });
+    if ("error" in result && result.error) {
+      logger?.error(`❌ [Step 2B] Tool error: ${result.message}`);
+      return { ...inputData, googleSearchCount: 0 };
+    }
+
+    let existingFirms: any[] = [];
+    try { existingFirms = JSON.parse(inputData.allFirmsJson); } catch { existingFirms = []; }
+
+    const combined = [...existingFirms, ...result.firms];
+    logger?.info(`✅ [Step 2B] Found ${result.count} firms from Google Search. Total: ${combined.length}`);
+    return {
+      allFirmsJson: JSON.stringify(combined),
+      googlePlacesCount: inputData.googlePlacesCount,
+      googleSearchCount: result.count,
+    };
+  },
+});
+
+const scrapeSpecializedSites = createStep({
+  id: "scrape-specialized-sites",
+  description: "Scrape specialized sites: Aga Khan, CRAterre, LafargeHolcim, ASF, Afrik21",
+  inputSchema: z.object({
+    allFirmsJson: z.string(),
+    googlePlacesCount: z.number(),
+    googleSearchCount: z.number(),
+  }),
+  outputSchema: z.object({
+    allFirmsJson: z.string(),
+    googlePlacesCount: z.number(),
+    googleSearchCount: z.number(),
+    specializedCount: z.number(),
+    totalBeforeDedup: z.number(),
+  }),
+  execute: async ({ inputData, mastra }) => {
+    const logger = mastra?.getLogger();
+    logger?.info("🔍 [Step 2C] Extracting from specialized sites...");
+    logger?.info("   Aga Khan Award | CRAterre | LafargeHolcim | ASF | Afrik21");
+
+    const result = await extractFromSpecializedSitesTool.execute({ placeholder: "" }, { mastra });
+    if ("error" in result && result.error) {
+      logger?.error(`❌ [Step 2C] Tool error: ${result.message}`);
+      let existing: any[] = [];
+      try { existing = JSON.parse(inputData.allFirmsJson); } catch { existing = []; }
+      return { ...inputData, specializedCount: 0, totalBeforeDedup: existing.length };
+    }
+
+    let existingFirms: any[] = [];
+    try { existingFirms = JSON.parse(inputData.allFirmsJson); } catch { existingFirms = []; }
+
+    const combined = [...existingFirms, ...result.firms];
+    logger?.info(`✅ [Step 2C] Found ${result.count} firms from specialized sites. Total: ${combined.length}`);
+    return {
+      allFirmsJson: JSON.stringify(combined),
+      googlePlacesCount: inputData.googlePlacesCount,
+      googleSearchCount: inputData.googleSearchCount,
+      specializedCount: result.count,
+      totalBeforeDedup: combined.length,
+    };
+  },
+});
+
+const consolidateFirms = createStep({
+  id: "consolidate-firms",
+  description: "Deduplicate firms from all sources and prepare for processing",
+  inputSchema: z.object({
+    allFirmsJson: z.string(),
+    googlePlacesCount: z.number(),
+    googleSearchCount: z.number(),
+    specializedCount: z.number(),
+    totalBeforeDedup: z.number(),
+  }),
+  outputSchema: z.object({
+    uniqueFirmsJson: z.string(),
+    uniqueCount: z.number(),
+    totalBeforeDedup: z.number(),
+    processedFirmsJson: z.string(),
+    currentIndex: z.number(),
+  }),
+  execute: async ({ inputData, mastra }) => {
+    const logger = mastra?.getLogger();
+    logger?.info("🔄 [Step 3] Consolidating and deduplicating firms...");
+
+    let allFirms: any[] = [];
+    try { allFirms = JSON.parse(inputData.allFirmsJson); } catch { allFirms = []; }
+
+    const unique = allFirms.reduce((acc: any[], firm: any) => {
+      if (!firm.website) { acc.push(firm); return acc; }
+      const normalized = firm.website.toLowerCase().trim();
+      if (!acc.find((f: any) => f.website && f.website.toLowerCase().trim() === normalized)) {
+        acc.push(firm);
+      }
+      return acc;
+    }, []);
+
+    logger?.info(`📊 [Step 3] Sources: Places=${inputData.googlePlacesCount}, Search=${inputData.googleSearchCount}, Specialized=${inputData.specializedCount}`);
+    logger?.info(`📊 [Step 3] Before dedup: ${inputData.totalBeforeDedup}, After: ${unique.length}`);
+
+    return {
+      uniqueFirmsJson: JSON.stringify(unique),
+      uniqueCount: unique.length,
+      totalBeforeDedup: inputData.totalBeforeDedup,
+      processedFirmsJson: "[]",
+      currentIndex: 0,
+    };
+  },
+});
+
+const processArchitectureFirm = createStep({
+  id: "process-architecture-firm",
+  description: "Extract emails, qualify with Dust AI, and store each firm",
+  inputSchema: z.object({
+    uniqueFirmsJson: z.string(),
+    uniqueCount: z.number(),
+    totalBeforeDedup: z.number(),
+    processedFirmsJson: z.string(),
+    currentIndex: z.number(),
+  }),
+  outputSchema: z.object({
+    processedFirmsJson: z.string(),
+    processedCount: z.number(),
+    totalBeforeDedup: z.number(),
+  }),
+  execute: async ({ inputData, mastra }) => {
+    const logger = mastra?.getLogger();
+    logger?.info("🏢 [Step 4] Processing architecture firms...");
+
+    let firms: any[] = [];
+    try { firms = JSON.parse(inputData.uniqueFirmsJson); } catch { firms = []; }
+
+    const processedFirms: any[] = [];
+
+    for (let i = 0; i < firms.length; i++) {
+      const firm = firms[i];
+      const firmName = firm.name || "Unknown";
+      const websiteUrl = firm.website || "";
+
+      logger?.info(`\n🏢 [Step 4] Processing ${i + 1}/${firms.length}: ${firmName}`);
+
+      if (!websiteUrl) {
+        logger?.info(`   ⚠️ No website, skipping`);
+        processedFirms.push({
+          firmName, websiteUrl: "N/A", emails: [], source: firm.source || "",
+          score: 1, pertinent: false, raison: "No website available",
+          projet_recent: null, typologies: [], langue: "fr",
+        });
+        continue;
+      }
+
+      logger?.info(`   📧 Extracting emails from ${websiteUrl}...`);
+      const websiteResult = await processFirmWebsiteTool.execute(
+        { firmName, websiteUrl }, { mastra }
+      );
+
+      let emails: string[] = [];
+      let websiteContent = "";
+      if (!("error" in websiteResult && websiteResult.error)) {
+        emails = websiteResult.emails;
+        websiteContent = websiteResult.websiteContent;
+      }
+      logger?.info(`   Found ${emails.length} email(s)`);
+
+      logger?.info(`   🤖 Qualifying with Dust AI...`);
+      const qualResult = await qualifyFirmWithDustAiTool.execute(
+        {
+          firmName,
+          websiteUrl,
+          websiteContent,
+          emails: JSON.stringify(emails),
+          source: firm.source || "",
+        },
+        { mastra }
+      );
+
+      if (!("error" in qualResult && qualResult.error)) {
+        const icon = qualResult.pertinent ? "✅" : "❌";
+        logger?.info(`   ${icon} Score: ${qualResult.score}/5, Qualified: ${qualResult.pertinent}`);
+        processedFirms.push(qualResult);
+      } else {
+        logger?.warn(`   ⚠️ Qualification failed for ${firmName}`);
+        processedFirms.push({
+          firmName, websiteUrl, emails, source: firm.source || "",
+          score: 1, pertinent: false, raison: "Qualification failed",
+          projet_recent: null, typologies: [], langue: "fr",
+        });
+      }
+    }
+
+    logger?.info(`\n✅ [Step 4] Processed ${processedFirms.length} firms`);
+    const qualified = processedFirms.filter(f => f.pertinent);
+    logger?.info(`   Qualified (score >= 3): ${qualified.length}/${processedFirms.length}`);
+
+    return {
+      processedFirmsJson: JSON.stringify(processedFirms),
+      processedCount: processedFirms.length,
+      totalBeforeDedup: inputData.totalBeforeDedup,
+    };
+  },
+});
+
+const generateCsvReport = createStep({
+  id: "generate-csv-report",
+  description: "Generate CSV report of qualified prospects (score >= 3)",
+  inputSchema: z.object({
+    processedFirmsJson: z.string(),
+    processedCount: z.number(),
+    totalBeforeDedup: z.number(),
+  }),
+  outputSchema: z.object({
+    csvContent: z.string(),
+    csvPath: z.string(),
+    totalCount: z.number(),
+    qualifiedCount: z.number(),
+    totalBeforeDedup: z.number(),
+  }),
+  execute: async ({ inputData, mastra }) => {
+    const logger = mastra?.getLogger();
+    logger?.info("📊 [Step 5] Generating CSV report...");
+
+    const result = await generateCsvTool.execute(
+      { firmsJson: inputData.processedFirmsJson }, { mastra }
     );
 
-    logger?.info("✅ [Step 1] Agent processing complete");
+    if ("error" in result && result.error) {
+      logger?.error(`❌ [Step 5] CSV generation failed: ${result.message}`);
+      return {
+        csvContent: "", csvPath: "", totalCount: 0, qualifiedCount: 0,
+        totalBeforeDedup: inputData.totalBeforeDedup,
+      };
+    }
 
-    // In a real workflow, you might:
-    // - Parse structured data from the response
-    // - Extract specific information
-    // - Handle errors gracefully
+    logger?.info(`✅ [Step 5] CSV generated: ${result.csvPath}`);
+    logger?.info(`   Total: ${result.totalCount}, Qualified: ${result.qualifiedCount}`);
 
     return {
-      agentResponse: response.text,
-      processedData: {
-        original: inputData.message,
-        processed: inputData.message.toUpperCase(), // Simple mock processing
-        timestamp: new Date().toISOString(),
-      },
+      csvContent: result.csvContent,
+      csvPath: result.csvPath,
+      totalCount: result.totalCount,
+      qualifiedCount: result.qualifiedCount,
+      totalBeforeDedup: inputData.totalBeforeDedup,
     };
   },
 });
 
-/**
- * Step 2: Output Results
- * This step demonstrates how to handle and output results
- */
-const outputResults = createStep({
-  id: "output-results",
-  description:
-    "Formats the agent's response and puts it in the form of a summary.", // Must contain a clear, concise description of what the step does.
-
-  // This step receives the output from the previous step
+const sendEmailSummary = createStep({
+  id: "send-email-summary",
+  description: "Send email with CSV report to michael@filtreplante.com",
   inputSchema: z.object({
-    agentResponse: z.string(),
-    processedData: z
-      .object({
-        original: z.string(),
-        processed: z.string(),
-        timestamp: z.string(),
-      })
-      .optional(),
+    csvContent: z.string(),
+    csvPath: z.string(),
+    totalCount: z.number(),
+    qualifiedCount: z.number(),
+    totalBeforeDedup: z.number(),
   }),
-
-  // Final output schema - this is what the workflow returns
   outputSchema: z.object({
+    sent: z.boolean(),
+    recipient: z.string(),
     summary: z.string(),
-    formattedOutput: z.string(),
-    success: z.boolean(),
+    messageId: z.string().optional(),
   }),
-
   execute: async ({ inputData, mastra }) => {
     const logger = mastra?.getLogger();
-    logger?.info("📤 [Step 2] Outputting results...");
+    logger?.info("📬 [Step 6] Sending email summary...");
 
-    /**
-     * In a real workflow, this step might:
-     * - Send data to an API
-     * - Write to a database
-     * - Send an email
-     * - Update a UI
-     * - Trigger webhooks
-     * - Store in a file system
-     */
+    const qualRate = inputData.totalCount > 0
+      ? Math.round((inputData.qualifiedCount / inputData.totalCount) * 100)
+      : 0;
 
-    // For this example, we'll format and log the output
-    const formattedOutput = `
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📊 WORKFLOW RESULTS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    const summaryText = `Prospection Automatique Bi-Hebdomadaire - ${new Date().toLocaleDateString("fr-FR")}
 
-🤖 Agent Response:
-${inputData.agentResponse}
+Résultats:
+- Cabinets découverts (avant dédup): ${inputData.totalBeforeDedup}
+- Cabinets uniques traités: ${inputData.totalCount}
+- Cabinets qualifiés (score >= 3): ${inputData.qualifiedCount}
+- Taux de qualification: ${qualRate}%
 
-📝 Processed Data:
-${
-  inputData.processedData
-    ? `
-  • Original: ${inputData.processedData.original}
-  • Processed: ${inputData.processedData.processed}
-  • Timestamp: ${inputData.processedData.timestamp}
-`
-    : "No processed data available"
-}
-`;
+Sources: Google Places, Google Search, Aga Khan Award, CRAterre, LafargeHolcim Foundation, Architecture sans Frontières, Afrik21
 
-    // Log the output using Mastra logger
-    logger?.info(formattedOutput);
-    logger?.info("✅ [Step 2] Results formatted and logged");
+Qualification Dust AI (score 1-5):
+- 1-2: Non qualifié
+- 3-5: Qualifié et exporté dans le CSV
 
-    return {
-      summary: `Successfully processed message with ${inputData.processedData?.original.length || 0} characters`,
-      formattedOutput,
-      success: true,
-    };
+CSV: ${inputData.csvPath}`;
+
+    const result = await sendEmailTool.execute(
+      {
+        csvContent: inputData.csvContent,
+        totalFirms: inputData.totalCount,
+        qualifiedFirms: inputData.qualifiedCount,
+        summaryText,
+      },
+      { mastra }
+    );
+
+    if ("error" in result && result.error) {
+      logger?.error(`❌ [Step 6] Email failed: ${result.message}`);
+      return { sent: false, recipient: "michael@filtreplante.com", summary: summaryText, messageId: undefined };
+    }
+
+    logger?.info(`✅ [Step 6] Email sent to ${result.recipient}`);
+    return { sent: result.sent, recipient: result.recipient, summary: summaryText, messageId: result.messageId };
   },
 });
 
-/**
- * MASTRA STEPS:
- * Remember:  There are many ways of structing a workflow, including boolean operations (conditionals, etc), looping, etc.
- * Please read the Mastra docs as instructed for more information if you need to setup a complex workflow. Mastra comes with many powerful primitives to help you build workflows.
- * We critically chain our steps in order to accomplish the user's desired automation.
- */
-
-/**
- * Create the workflow by chaining steps
- */
 export const automationWorkflow = createWorkflow({
   id: "automation-workflow",
-
-  // Define the initial input schema for the entire workflow
-  inputSchema: z.object({
-    message: z.string().describe("Message to process through the workflow"),
-    includeAnalysis: z
-      .boolean()
-      .optional()
-      .describe("Whether to include detailed analysis"),
-  }) as any, // TS workaround: Inngest type system incompatibility with Zod schemas
-
-  // Define the final output schema (should match the last step's output)
+  inputSchema: z.object({}).passthrough() as any,
   outputSchema: z.object({
+    sent: z.boolean(),
+    recipient: z.string(),
     summary: z.string(),
-    formattedOutput: z.string(),
-    success: z.boolean(),
+    messageId: z.string().optional(),
   }),
 })
-  // Chain your steps in order
-  .then(processWithAgent as any) // TS workaround: type inference issues with Inngest step chaining
-  .then(outputResults as any)
+  .then(initializeDatabase as any)
+  .then(searchGooglePlaces as any)
+  .then(scrapeGoogleSearch as any)
+  .then(scrapeSpecializedSites as any)
+  .then(consolidateFirms as any)
+  .then(processArchitectureFirm as any)
+  .then(generateCsvReport as any)
+  .then(sendEmailSummary as any)
   .commit();
