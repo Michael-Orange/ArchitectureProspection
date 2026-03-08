@@ -37,19 +37,21 @@ export const searchGooglePlacesTool = createTool({
     const logger = context?.mastra?.getLogger();
     logger?.info("🔍 [searchGooglePlaces] Searching for architecture firms in Senegal...");
 
-    const cities = ["Dakar", "Thiès", "Saint-Louis"];
     const queries = [
-      "cabinet architecture écologique",
-      "architecte durable bioclimatique",
+      "cabinet architecture Sénégal",
+      "architecte Sénégal",
+      "bureau architecture Sénégal",
+      "architectural firm Senegal",
+      "architecture durable Sénégal",
+      "éco-construction Sénégal",
     ];
 
     const firms: Array<{name: string; address?: string; phone?: string; website?: string; source: string}> = [];
 
-    for (const city of cities) {
-      for (const query of queries) {
+    for (const query of queries) {
         try {
-          const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query + " " + city + " Sénégal")}&num=10&hl=fr`;
-          logger?.info(`🔍 [searchGooglePlaces] Searching: ${query} in ${city}`);
+          const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&num=10&hl=fr`;
+          logger?.info(`🔍 [searchGooglePlaces] Searching: ${query}`);
 
           const ua = getRandomUA();
           logger?.info(`   🔄 Using UA: ${ua.substring(0, 40)}...`);
@@ -73,7 +75,7 @@ export const searchGooglePlacesTool = createTool({
                     if (!firms.find(f => f.website && f.website.includes(domain))) {
                       firms.push({
                         name: domain,
-                        address: `${city}, Sénégal`,
+                        address: "Sénégal",
                         website: url,
                         source: "Google Places",
                       });
@@ -87,7 +89,6 @@ export const searchGooglePlacesTool = createTool({
         } catch (err) {
           logger?.warn(`⚠️ [searchGooglePlaces] Error: ${err}`);
         }
-      }
     }
 
     logger?.info(`✅ [searchGooglePlaces] Found ${firms.length} firms`);
@@ -115,11 +116,11 @@ export const scrapeGoogleSearchTool = createTool({
     logger?.info("🔍 [scrapeGoogleSearch] Scraping with eco queries...");
 
     const ecoQueries = [
-      "cabinet architecture écologique Sénégal",
-      "architecte bioclimatique Dakar Sénégal",
-      "construction BTC pisé terre Sénégal",
-      "éco-construction durable Sénégal",
-      "architecture terre crue Afrique Ouest Sénégal",
+      'architecte "BTC" OR "brique de terre comprimée" Sénégal',
+      'cabinet architecture "pisé" OR "terre crue" Sénégal',
+      'construction "matériaux locaux" OR "bio-sourcés" Sénégal',
+      '"architecture bioclimatique" OR "éco-construction" Sénégal',
+      '"CRAterre" OR "architecture en terre" Sénégal',
     ];
 
     const firms: Array<{name: string; website?: string; snippet?: string; source: string}> = [];
@@ -189,11 +190,11 @@ export const extractFromSpecializedSitesTool = createTool({
     const firms: Array<{name: string; website?: string; description?: string; source: string}> = [];
 
     const sources = [
-      { name: "Aga Khan Award", urls: ["https://archnet.org/collections/34"], keywords: ["Senegal", "Sénégal", "Dakar", "West Africa"] },
-      { name: "CRAterre", urls: ["https://craterre.org/"], keywords: ["Senegal", "Sénégal", "terre", "earth"] },
-      { name: "LafargeHolcim Foundation", urls: ["https://www.lafargeholcim-foundation.org/projects"], keywords: ["Senegal", "Sénégal", "Africa"] },
-      { name: "Architecture sans Frontières", urls: ["https://www.asf-france.com/projets/"], keywords: ["Senegal", "Sénégal", "Afrique"] },
-      { name: "Afrik21", urls: ["https://www.afrik21.africa/tag/construction-durable/"], keywords: ["BTC", "pisé", "terre", "bioclimatique", "Sénégal"] },
+      { name: "Aga Khan Award", urls: ["https://archnet.org/collections/34"], keywords: ["Senegal", "Sénégal", "Dakar", "West Africa", "Afrique de l'Ouest", "Sahel"] },
+      { name: "CRAterre", urls: ["https://craterre.org/"], keywords: ["Senegal", "Sénégal", "terre", "earth", "Sahel", "UEMOA", "projet"] },
+      { name: "LafargeHolcim Foundation", urls: ["https://www.lafargeholcim-foundation.org/projects"], keywords: ["Senegal", "Sénégal", "Africa", "Afrique", "Sahel", "WAEMU"] },
+      { name: "Architecture sans Frontières", urls: ["https://www.asf-france.com/projets/"], keywords: ["Senegal", "Sénégal", "Afrique", "Sahel", "projet Sénégal", "project Senegal"] },
+      { name: "Afrik21", urls: ["https://www.afrik21.africa/tag/construction-durable/"], keywords: ["BTC", "pisé", "terre", "bioclimatique", "Sénégal", "Senegal", "Sahel"] },
     ];
 
     const slowSites = ["lafargeholcim", "afrik21"];
