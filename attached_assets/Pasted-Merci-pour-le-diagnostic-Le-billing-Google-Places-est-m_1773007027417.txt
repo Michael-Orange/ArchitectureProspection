@@ -1,0 +1,149 @@
+Merci pour le diagnostic ! Le billing Google Places est maintenant activé (Michael l'a corrigé). 
+
+Reste 2 corrections :
+
+═══════════════════════════════════════════════════════════
+
+PROBLÈME 2 — SerpAPI : Filtrer les articles/blogs/documents
+
+CORRECTION :
+
+Dans `scrapeGoogleSearchSerpAPITool`, ajoute un filtre intelligent pour garder UNIQUEMENT les sites de cabinets :
+
+```typescript
+const excludePatterns = [
+  // Sous-pages d'articles
+  '/la-construction/',
+  '/focus/',
+  '/bonne-pratique/',
+  '/case/',
+  '/programme-de-construction',
+  '/darchitecture-en-terre-crue',  // Page blog
+  
+  // Agrégateurs/médias à exclure complètement
+  'climate-chance.org',
+  'afrik21.africa',
+  'craterre.org',  // On les scrapera via Track C
+];
+
+const validDomainPatterns = [
+  // Formats de sites de cabinets valides
+  /^https?:\/\/[a-z0-9-]+\.(com|sn|net|org)\/?$/i,  // Homepage (ex: worofila.com/)
+  /^https?:\/\/www\.[a-z0-9-]+\.(com|sn|net|org)\/?$/i,  // Homepage www
+  /^https?:\/\/[a-z0-9-]+\.(com|sn|net|org)\/atelier\/?$/i,  // /atelier (ok)
+  /^https?:\/\/[a-z0-9-]+\.(com|sn|net|org)\/presentation\/?$/i,  // /presentation (ok)
+];
+
+for (const result of data.organic_results || []) {
+  const url = result.link;
+  
+  // Exclure les patterns interdits
+  if (excludePatterns.some(pattern => url.toLowerCase().includes(pattern))) {
+    console.log(`Filtered out article: ${result.title}`);
+    continue;
+  }
+  
+  // Garder uniquement les formats valides (homepage ou pages institutionnelles)
+  const isValidFormat = validDomainPatterns.some(regex => regex.test(url));
+  
+  if (isValidFormat) {
+    // Extraire le domaine propre
+    const domain = new URL(url).hostname.replace('www.', '');
+    
+    firms.push({
+      name: result.title.replace(/ - .+$/, '').trim(),  // Nettoyer le titre
+      website: url,
+      domain: domain,
+      snippet: result.snippet,
+      source: "SerpAPI Google Search",
+    });
+  }
+}
+```
+
+RÉSULTAT ATTENDU :
+- ✅ Garde : worofila.com, dnasarl.com, compact.sn, elementerre-sarl.com, terrabitat.net
+- ❌ Filtre : Articles Climate Chance, pages /focus/, /case/, blogs, documents académiques
+
+═══════════════════════════════════════════════════════════
+
+PROBLÈME 3 — Sites spécialisés : Désactiver ou simplifier drastiquement
+
+RECOMMANDATION : **DÉSACTIVER TEMPORAIREMENT Track C**
+
+Les sites spécialisés sont trop complexes à scraper (JavaScript, authentification, structure changeante).
+
+**Option A (recommandée) : Désactiver Track C**
+
+Commente ou supprime l'appel à `scrapeSpecializedSites` dans le workflow.
+
+Raisons :
+- LafargeHolcim et Afrik21 : timeouts récurrents
+- Archnet : JavaScript dynamique (nécessite Playwright, pas BeautifulSoup)
+- CRAterre et ASF : Pas de liste de cabinets exploitable facilement
+
+**Track A (Google Places) + Track B (SerpAPI filtré) suffiront largement.**
+
+**Option B (si tu veux vraiment garder Track C) : Scraping ultra-ciblé**
+
+Garde UNIQUEMENT CRAterre avec une requête très spécifique :
+
+```typescript
+// Dans scrapeSpecializedSitesTool
+
+const specializedSources = [
+  {
+    name: "CRAterre",
+    url: "https://craterre.hypotheses.org/category/senegal",  // Blog avec tag Sénégal
+    timeout: 15000,
+  },
+];
+
+// Scrape uniquement les URLs mentionnées dans les articles
+// Extraire les domaines uniques
+// Ne pas chercher à parser toute la structure du site
+```
+
+Mais honnêtement, **désactiver Track C est plus pragmatique** pour l'instant.
+
+═══════════════════════════════════════════════════════════
+
+RÉSULTAT ATTENDU après corrections :
+
+**Test 1 — Avec Track C désactivé :**
+- Track A (Google Places) : 15-20 cabinets (maintenant que le billing est activé)
+- Track B (SerpAPI filtré) : 8-12 cabinets (sites principaux seulement)
+- Track C : désactivé
+- **TOTAL : 23-32 cabinets**
+- **Emails : 15-20 (65-70%)**
+
+**Test 2 — Avec Track C ultra-simplifié (optionnel) :**
+- Track C : 2-5 cabinets de CRAterre seulement
+- **TOTAL : 25-37 cabinets**
+
+Je recommande **Test 1** (désactiver Track C) pour commencer.
+
+Peux-tu implémenter les corrections et relancer un test ?
+🎯 CE QU'ON ATTEND
+Après ces corrections :
+Avant (test actuel) :
+Track A : 0 cabinets ❌
+Track B : 31 résultats (dont beaucoup d'articles) ⚠️
+Track C : 0 cabinets ❌
+→ 11 cabinets qualifiés, 5 avec emails
+Après (attendu) :
+Track A : 18 cabinets ✅ (Google Places avec billing activé)
+Track B : 10 cabinets ✅ (SerpAPI filtré, sites principaux seulement)
+Track C : désactivé ⏸️
+→ 25-28 cabinets totaux
+→ 15-18 cabinets qualifiés (score ≥ 3)
+→ 12-15 avec emails (70%)
+💡 POURQUOI DÉSACTIVER TRACK C ?
+Principe du MVP (Minimum Viable Product) :
+Track A + B donnent déjà 25-30 cabinets qualifiés
+C'est largement suffisant pour commencer la prospection
+Track C est complexe et chronophage à corriger
+Tu peux l'améliorer plus tard si besoin de + de volume
+Priorisation :
+✅ Avoir un système qui marche maintenant (Track A + B)
+⏳ Optimiser Track C dans un 2e temps (si vraiment nécessaire)

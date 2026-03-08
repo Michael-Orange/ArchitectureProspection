@@ -1,0 +1,104 @@
+ANALYSE DES RÉSULTATS - 3 Problèmes identifiés
+
+Bon travail sur l'intégration Dust ! Mais il y a 3 problèmes dans la découverte :
+
+═══════════════════════════════════════════════════════════
+
+PROBLÈME 1 - Track A (Google Places API) retourne 0 cabinets
+
+Tous les 11 résultats viennent de SerpAPI. Aucun de Google Places API.
+
+DIAGNOSTIC :
+Peux-tu vérifier les logs de `searchGooglePlacesTool` ? 
+- L'API est-elle appelée ?
+- Retourne-t-elle des erreurs ?
+- Y a-t-il des résultats ignorés par erreur ?
+
+CORRECTION ATTENDUE :
+Track A devrait trouver 15-25 cabinets locaux basés au Sénégal avec :
+- Nom, adresse, téléphone
+- Site web (si disponible)
+- Source = "Google Places API"
+
+═══════════════════════════════════════════════════════════
+
+PROBLÈME 2 - SerpAPI retourne beaucoup d'articles web (pas des cabinets)
+
+Exemples dans les résultats :
+- "La construction – Elementerre" → Article SUR Elementerre (pas le site officiel)
+- "Les Spécialistes des Briques..." → Article générique
+- "D'architecture en terre crue" → Page blog
+
+CORRECTION NÉCESSAIRE :
+
+Ajoute un filtre dans `scrapeGoogleSearchSerpAPITool` pour **ignorer les pages d'articles** :
+
+```typescript
+// Après avoir récupéré les résultats SerpAPI
+
+const excludePatterns = [
+  '/la-construction/',  // Pages d'articles
+  '/focus/',
+  '/bonne-pratique/',
+  '/case/',
+  'climate-chance.org',  // Agrégateurs à filtrer
+  'hardel-lebihan.com',  // Cabinets français sans présence locale Sénégal
+];
+
+for (const result of data.organic_results || []) {
+  const url = result.link.toLowerCase();
+  
+  // Ignorer les pages d'articles
+  if (excludePatterns.some(pattern => url.includes(pattern))) {
+    console.log(`Skipped article: ${result.title}`);
+    continue;
+  }
+  
+  // Prioriser les sites avec domaine propre (pas des sous-pages)
+  const isHomepage = url.match(/^https?:\/\/[^\/]+\/?$/);
+  const isMainSite = !url.includes('/focus/') && !url.includes('/case/');
+  
+  if (isHomepage || isMainSite) {
+    firms.push({
+      name: result.title,
+      website: result.link,
+      ...
+    });
+  }
+}
+```
+
+Garde uniquement les **domaines principaux** des cabinets (ex: worofila.com, dnasarl.com).
+
+═══════════════════════════════════════════════════════════
+
+PROBLÈME 3 - Track C (Sites spécialisés) retourne 0 cabinets
+
+Aucun résultat de Aga Khan, CRAterre, LafargeHolcim, ASF, Afrik21.
+
+DIAGNOSTIC :
+Peux-tu vérifier les logs de `scrapeSpecializedSitesTool` ?
+- Les sites sont-ils accessibles ?
+- Le scraping BeautifulSoup fonctionne-t-il ?
+- Les sélecteurs CSS sont-ils corrects ?
+
+CORRECTION ATTENDUE :
+Track C devrait trouver 5-10 cabinets depuis :
+- craterre.org (projets Sénégal)
+- akdn.org / archnet.org (Aga Khan Award - Afrique)
+- lafargeholcim-foundation.org (prix durabilité Afrique)
+
+Si le scraping des sites spécialisés est trop complexe, on peut le DÉSACTIVER TEMPORAIREMENT et se concentrer sur Track A + B bien configurés.
+
+═══════════════════════════════════════════════════════════
+
+RÉSULTAT ATTENDU après corrections :
+
+Track A (Google Places) : 15-20 cabinets (locaux Sénégal avec téléphone/adresse)
+Track B (SerpAPI filtré) : 8-12 cabinets (sites principaux seulement, pas d'articles)
+Track C (Sites spécialisés) : 3-5 cabinets (si activé) ou 0 (si désactivé)
+
+TOTAL : 25-35 cabinets qualifiés
+Emails : 15-20 cabinets avec emails (60-70%)
+
+Peux-tu corriger ces 3 points et relancer un test ?

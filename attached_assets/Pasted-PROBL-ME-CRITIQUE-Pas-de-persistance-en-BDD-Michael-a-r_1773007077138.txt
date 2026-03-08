@@ -1,0 +1,265 @@
+PROBLÈME CRITIQUE — Pas de persistance en BDD
+
+Michael a raison : sans stockage en BDD, le workflow renvoie les mêmes cabinets à chaque run toutes les 2 semaines.
+
+CORRECTION NÉCESSAIRE :
+
+═══════════════════════════════════════════════════════════
+
+CRÉER LE SCHÉMA BDD COMPLET
+
+Ajoute ces tables SQLite dans le fichier de migration ou d'initialisation :
+
+```sql
+-- Table principale : cabinets découverts
+CREATE TABLE IF NOT EXISTS cabinets (
+  id TEXT PRIMARY KEY,              -- hash du domaine (ex: md5(worofila.com))
+  nom TEXT NOT NULL,
+  pays TEXT DEFAULT 'Sénégal',
+  ville TEXT,
+  adresse TEXT,
+  site_web TEXT UNIQUE,             -- INDEX unique pour déduplication
+  telephone TEXT,
+  source TEXT NOT NULL,             -- 'Google Places', 'SerpAPI', 'Sites spécialisés'
+  date_decouverte DATE NOT NULL,
+  statut TEXT DEFAULT 'nouveau',    -- 'nouveau', 'en_cours', 'contacte', 'rejete'
+  UNIQUE(site_web)                  -- Éviter les doublons par domaine
+);
+
+-- Table : contacts trouvés
+CREATE TABLE IF NOT EXISTS contacts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  cabinet_id TEXT NOT NULL,
+  email TEXT NOT NULL,
+  confiance_email INTEGER,          -- score 0-100
+  methode_trouvaille TEXT,          -- 'scraping', 'google_search', 'generique'
+  date_trouvaille DATE,
+  FOREIGN KEY (cabinet_id) REFERENCES cabinets(id),
+  UNIQUE(cabinet_id, email)         -- Éviter doublons email par cabinet
+);
+
+-- Table : qualification IA
+CREATE TABLE IF NOT EXISTS qualifications (
+  cabinet_id TEXT PRIMARY KEY,
+  score INTEGER NOT NULL,           -- 1-5
+  pertinent BOOLEAN,
+  raison TEXT,
+  projet_recent TEXT,
+  typologies TEXT,                  -- JSON array stringified
+  langue TEXT,
+  date_qualification DATE,
+  FOREIGN KEY (cabinet_id) REFERENCES cabinets(id)
+);
+
+-- Table : scraping sites web
+CREATE TABLE IF NOT EXISTS scraping (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  cabinet_id TEXT NOT NULL,
+  date_scraping DATE,
+  contenu_texte TEXT,               -- contenu complet du site
+  mots_cles TEXT,                   -- JSON array stringified
+  projets_detectes TEXT,            -- JSON array stringified
+  reussi BOOLEAN,
+  FOREIGN KEY (cabinet_id) REFERENCES cabinets(id)
+);
+
+-- Index pour performance
+CREATE INDEX IF NOT EXISTS idx_cabinets_statut ON cabinets(statut);
+CREATE INDEX IF NOT EXISTS idx_qualifications_score ON qualifications(score);
+CREATE INDEX IF NOT EXISTS idx_cabinets_date ON cabinets(date_decouverte);
+```
+
+═══════════════════════════════════════════════════════════
+
+MODIFIER LE WORKFLOW : Ajouter la déduplication
+
+**Step 5 bis : Déduplication contre la BDD**
+
+Après `consolidateFirms`, ajoute un step :
+
+```typescript
+export const deduplicateAgainstDb = createStep({
+  id: "deduplicate-against-db",
+  execute: async ({ context }) => {
+    const { firms } = context;
+    const db = getDatabase();  // Instance SQLite
+    
+    const newFirms = [];
+    
+    for (const firm of firms) {
+      // Vérifier si le cabinet existe déjà (par domaine)
+      const domain = firm.website ? new URL(firm.website).hostname : null;
+      
+      if (!domain) {
+        newFirms.push(firm);
+        continue;
+      }
+      
+      const existing = await db.prepare(
+        "SELECT id FROM cabinets WHERE site_web LIKE ?"
+      ).get(`%${domain}%`);
+      
+      if (!existing) {
+        newFirms.push(firm);
+        console.log(`New firm: ${firm.name} (${domain})`);
+      } else {
+        console.log(`Skipped existing firm: ${firm.name} (${domain})`);
+      }
+    }
+    
+    console.log(`Deduplication: ${newFirms.length} new firms out of ${firms.length} discovered`);
+    
+    return { firms: newFirms };
+  },
+});
+```
+
+**Step 8 : Écriture en BDD (après qualification)**
+
+Remplace ou crée `writeToDB` :
+
+```typescript
+export const writeToDb = createStep({
+  id: "write-to-db",
+  execute: async ({ context }) => {
+    const { firms } = context;
+    const db = getDatabase();
+    
+    for (const firm of firms) {
+      const cabinetId = crypto.createHash('md5').update(firm.website || firm.name).digest('hex');
+      
+      // INSERT cabinet
+      await db.prepare(`
+        INSERT OR IGNORE INTO cabinets 
+        (id, nom, pays, ville, adresse, site_web, telephone, source, date_decouverte, statut)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        cabinetId,
+        firm.name,
+        firm.country || 'Sénégal',
+        firm.city,
+        firm.address,
+        firm.website,
+        firm.phone,
+        firm.source,
+        new Date().toISOString().split('T')[0],
+        'nouveau'
+      );
+      
+      // INSERT emails (si trouvés)
+      if (firm.emails && firm.emails.length > 0) {
+        for (const email of firm.emails) {
+          await db.prepare(`
+            INSERT OR IGNORE INTO contacts 
+            (cabinet_id, email, confiance_email, methode_trouvaille, date_trouvaille)
+            VALUES (?, ?, ?, ?, ?)
+          `).run(
+            cabinetId,
+            email,
+            80,  // confiance par défaut
+            'scraping',
+            new Date().toISOString().split('T')[0]
+          );
+        }
+      }
+      
+      // INSERT qualification (si existe)
+      if (firm.score) {
+        await db.prepare(`
+          INSERT OR REPLACE INTO qualifications
+          (cabinet_id, score, pertinent, raison, projet_recent, typologies, langue, date_qualification)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          cabinetId,
+          firm.score,
+          firm.pertinent,
+          firm.raison,
+          firm.projet_recent,
+          JSON.stringify(firm.typologies || []),
+          firm.langue || 'fr',
+          new Date().toISOString().split('T')[0]
+        );
+      }
+      
+      // INSERT scraping (si existe)
+      if (firm.scrapedContent) {
+        await db.prepare(`
+          INSERT INTO scraping
+          (cabinet_id, date_scraping, contenu_texte, mots_cles, projets_detectes, reussi)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(
+          cabinetId,
+          new Date().toISOString().split('T')[0],
+          firm.scrapedContent,
+          JSON.stringify(firm.keywords || []),
+          JSON.stringify(firm.projects || []),
+          firm.scrapingSuccess || false
+        );
+      }
+    }
+    
+    console.log(`Wrote ${firms.length} new firms to database`);
+    
+    return { writtenCount: firms.length };
+  },
+});
+```
+
+**ORDRE DES STEPS FINAL :**
+
+1. initializeDatabase
+2. searchGooglePlaces
+3. scrapeGoogleSearchSerpAPI
+4. scrapeSpecializedSites (ou désactivé)
+5. consolidateFirms
+6. **deduplicateAgainstDb** ← NOUVEAU
+7. scrapeFirmWebsites
+8. qualifyDustBatch
+9. **writeToDb** ← NOUVEAU
+10. generateCsvReport
+11. sendEmailSummary
+
+═══════════════════════════════════════════════════════════
+
+MODIFIER LE CSV ET L'EMAIL : Indiquer "NOUVEAUX"
+
+Dans l'email summary :
+
+```
+Sujet : [FiltrePlante] 5 nouveaux prospects qualifiés (au lieu de "18 prospects")
+
+Corps :
+Bonjour,
+
+Le workflow de prospection a découvert 5 NOUVEAUX cabinets d'architecture 
+qualifiés au Sénégal (32 cabinets scannés, 27 déjà en base de données).
+
+Prospects qualifiés (score ≥ 3) :
+- Cabinet X (score 5/5)
+- Cabinet Y (score 4/5)
+...
+
+Total en base de données : 55 cabinets
+Nouveaux ce run : 5 cabinets
+```
+
+═══════════════════════════════════════════════════════════
+
+RÉSULTAT ATTENDU :
+
+**Run 1 (aujourd'hui) :**
+- 28 cabinets découverts → 28 NOUVEAUX
+- BDD : 28 cabinets stockés
+- Email : "28 nouveaux prospects"
+
+**Run 2 (dans 2 semaines) :**
+- 30 cabinets découverts → 25 déjà en BDD, 5 NOUVEAUX
+- BDD : 5 cabinets ajoutés (total = 33)
+- Email : "5 nouveaux prospects"
+
+**Run 3 (dans 4 semaines) :**
+- 32 cabinets découverts → 30 déjà en BDD, 2 NOUVEAUX
+- BDD : 2 cabinets ajoutés (total = 35)
+- Email : "2 nouveaux prospects"
+
+Implémente ces modifications et relance un test.
