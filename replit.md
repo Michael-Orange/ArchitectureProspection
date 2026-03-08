@@ -32,10 +32,11 @@ Automated bi-weekly Mastra/Inngest workflow that discovers and qualifies ecologi
 8. Send email summary to michael@filtreplante.com
 
 ## Performance
-- Total workflow execution: ~90 seconds
-- SerpAPI: 30 firms found consistently
-- Parallel scraping: ~26 seconds for 30 firms (15 scrapable, 15 skipped)
-- Dust API + fallback: ~1 second (keyword scoring)
+- Total workflow execution: ~3 minutes (scraping ~35s + Dust AI ~90s + rest ~30s)
+- SerpAPI: ~31 firms found consistently
+- Parallel scraping: ~35 seconds for 31 firms (19 scrapable, 12 skipped as PDFs/news)
+- Dust AI batch qualification: ~90 seconds, qualifies ~11/31 firms (score >= 3)
+- Keyword fallback activates automatically if Dust AI is unavailable
 
 ## Environment Variables Required
 - `AI_INTEGRATIONS_ANTHROPIC_API_KEY` — Replit AI Integration (configured)
@@ -44,7 +45,7 @@ Automated bi-weekly Mastra/Inngest workflow that discovers and qualifies ecologi
 - `SERPAPI` — SerpAPI key for Google Search (configured, 250 free/month)
 - `DUST_API_KEY` — Dust AI API key (configured)
 - `DUST_WORKSPACE_ID` — Default: 3OUdFWdJIF
-- `DUST_AGENT_ID` — Default: 3hKwn579Sc (currently returns 400 — agent disabled)
+- `DUST_AGENT_ID` — Default: 3hKwn579Sc (must be shared/accessible via API)
 - `DATABASE_URL` — PostgreSQL (configured)
 - `EMAIL_RECIPIENT` — Default: michael@filtreplante.com
 - `SCHEDULE_CRON_EXPRESSION` — Default: 0 15 * * 6
