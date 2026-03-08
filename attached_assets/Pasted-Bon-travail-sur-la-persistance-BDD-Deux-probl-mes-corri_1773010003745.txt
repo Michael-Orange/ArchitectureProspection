@@ -1,0 +1,126 @@
+Bon travail sur la persistance BDD ! Deux problèmes à corriger :
+
+═══════════════════════════════════════════════════════════
+
+PROBLÈME 1 — Emails manquants (pages contact non scrapées)
+
+EXEMPLE :
+- CHA Studio Design (http://www.cha-studio.design/)
+- Email visible sur https://www.cha-studio.design/contact-us
+- Mais pas extrait par le scraping
+
+DIAGNOSTIC :
+Le scraping visite `/projets`, `/realisations`, `/about`, `/equipe` mais PAS les pages contact.
+
+CORRECTION :
+
+Dans `scrapeFirmWebsitesTool`, PRIORISER les pages contact :
+
+```typescript
+// Ordre de priorité des pages (CONTACT EN PREMIER)
+const pagesToTry = [
+  // Pages contact (PRIORITÉ 1 - les emails sont TOUJOURS là)
+  `${baseUrl}/contact`,
+  `${baseUrl}/contact-us`,
+  `${baseUrl}/contactez-nous`,
+  `${baseUrl}/nous-contacter`,
+  `${baseUrl}/fr/contact`,
+  `${baseUrl}/en/contact`,
+  
+  // Homepage et pages institutionnelles (PRIORITÉ 2)
+  baseUrl,
+  `${baseUrl}/about`,
+  `${baseUrl}/a-propos`,
+  `${baseUrl}/equipe`,
+  `${baseUrl}/team`,
+  
+  // Pages projets (PRIORITÉ 3 - pour les mots-clés)
+  `${baseUrl}/projets`,
+  `${baseUrl}/realisations`,
+  `${baseUrl}/projects`,
+  `${baseUrl}/portfolio`,
+];
+
+// Pour chaque page, extraire les emails avec regex amélioré
+const emailRegex = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z]{2,6})/gi;
+const emailsFound = new Set();
+
+for (const url of pagesToTry) {
+  try {
+    const response = await fetch(url, { timeout: 10000 });
+    if (!response.ok) continue;
+    
+    const html = await response.text();
+    
+    // Extraire tous les emails de la page
+    const matches = html.matchAll(emailRegex);
+    for (const match of matches) {
+      const email = match[1].toLowerCase();
+      
+      // Filtrer les emails génériques/spam
+      if (!email.includes('example.') && 
+          !email.includes('test@') && 
+          !email.includes('noreply@') &&
+          !email.includes('no-reply@')) {
+        emailsFound.add(email);
+      }
+    }
+    
+    // Si on a trouvé au moins 1 email, pas besoin de chercher plus
+    if (emailsFound.size > 0) {
+      console.log(`✅ Found ${emailsFound.size} email(s) on ${url}`);
+      break;  // Stopper dès qu'on a trouvé des emails
+    }
+    
+    await new Promise(r => setTimeout(r, 500));
+  } catch (e) {
+    // Page inaccessible, continuer
+  }
+}
+
+// Convertir Set en Array
+firm.emails = Array.from(emailsFound);
+```
+
+RÉSULTAT ATTENDU :
+- CHA Studio : contact@cha-studio.design ✅
+- ELEMENTERRE : contact visible sur site ✅
+- 8-9/10 cabinets avec emails (au lieu de 5/10)
+
+═══════════════════════════════════════════════════════════
+
+PROBLÈME 2 — Pas de cabinets internationaux avec projets Sénégal
+
+RÉSULTAT ACTUEL :
+- 10/10 cabinets sont LOCAUX (basés au Sénégal)
+- 0/10 cabinets INTERNATIONAUX (français, européens, etc.)
+
+POURQUOI :
+- Google Places : cherche des cabinets BASÉS au Sénégal (adresse locale)
+- SerpAPI : requêtes actuelles ciblent les cabinets locaux
+- Track C : désactivé
+
+CORRECTION — Option A : Ajouter des requêtes SerpAPI "internationaux"
+
+Dans `scrapeGoogleSearchTool`, ajoute 3 requêtes spécifiques pour les cabinets internationaux :
+
+```typescript
+const ecoQueries = [
+  // EXISTANTES (cabinets locaux)
+  'architecte "BTC" OR "brique de terre comprimée" Sénégal',
+  'cabinet architecture "pisé" OR "terre crue" Sénégal',
+  'construction "matériaux locaux" OR "bio-sourcés" Sénégal',
+  '"architecture bioclimatique" OR "éco-construction" Sénégal',
+  '"CRAterre" OR "architecture en terre" Sénégal',
+  
+  // NOUVELLES (cabinets internationaux avec projets Sénégal)
+  'architecte français projet Sénégal "développement durable"',
+  '"architecture firm" OR "cabinet" project Senegal sustainable',
+  '"Aga Khan Award" OR "LafargeHolcim" architecture Senegal project',
+];
+```
+
+RÉSULTAT ATTENDU :
+- Cabinets français ayant fait des projets durables au Sénégal
+- Cabinets primés (Aga Khan, LafargeHolcim) pour projets Sénégal
+- Mix : 60% locaux + 40% internationaux
