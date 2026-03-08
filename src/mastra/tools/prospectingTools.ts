@@ -293,62 +293,159 @@ export const extractFromSpecializedSitesTool = createTool({
   },
 });
 
-export const processFirmWebsiteTool = createTool({
-  id: "process-firm-website",
-  description: "Visit firm website and extract emails and text content",
+export const scrapeFirmWebsitesTool = createTool({
+  id: "scrape-firm-websites",
+  description: "Deep scraping of all firm websites to extract content, emails, keywords and projects",
   inputSchema: z.object({
-    firmName: z.string().describe("Name of the firm"),
-    websiteUrl: z.string().describe("URL of the firm website"),
+    firmsJson: z.string().describe("JSON string of firms array to scrape"),
   }),
   outputSchema: z.object({
-    firmName: z.string(),
-    websiteUrl: z.string(),
-    emails: z.array(z.string()),
-    websiteContent: z.string(),
+    firmsJson: z.string(),
+    scrapedCount: z.number(),
+    totalCount: z.number(),
   }),
   execute: async (inputData, context) => {
     const logger = context?.mastra?.getLogger();
-    logger?.info(`📧 [processFirmWebsite] Processing: ${inputData.websiteUrl}`);
+    logger?.info("🌐 [scrapeFirmWebsites] Starting deep scraping of firm websites...");
 
-    const emails: string[] = [];
-    let websiteContent = "";
+    let firms: any[] = [];
+    try { firms = JSON.parse(inputData.firmsJson); } catch { firms = []; }
 
-    const pagesToCheck = [
-      inputData.websiteUrl,
-      inputData.websiteUrl.replace(/\/$/, "") + "/contact",
-      inputData.websiteUrl.replace(/\/$/, "") + "/about",
-      inputData.websiteUrl.replace(/\/$/, "") + "/a-propos",
+    const ecoKeywords = [
+      "BTC", "brique de terre comprimée", "pisé", "terre crue",
+      "adobe", "banco", "bioclimatique", "durable", "écologique",
+      "HQE", "LEED", "BREEAM", "matériaux locaux", "bio-sourcés",
+      "développement durable", "éco-construction", "CRAterre",
     ];
 
-    for (const pageUrl of pagesToCheck) {
-      try {
-        const response = await fetch(pageUrl, {
-          headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept-Language": "fr-FR,fr;q=0.9",
-          },
-          signal: AbortSignal.timeout(10000),
-        });
+    const emailExcludes = ["example.com", "wixpress", "sentry.", "cloudflare", "googleapis"];
+    const skipDomains = ["scribd.com", "semanticscholar.org", "researchrepository.ilo.org", "hal.science", "mongabay.com", "rfi.fr", "dw.com", "africanews.com", "construction21.org", "whc.unesco.org"];
+    const scrapedFirms: any[] = [];
 
-        if (response.ok) {
-          const html = await response.text();
-          const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
-          const foundEmails = html.match(emailRegex) || [];
-          for (const email of foundEmails) {
-            const clean = email.toLowerCase().trim();
-            if (!emails.includes(clean) && !clean.includes("example.com") && !clean.includes("wixpress") && !clean.includes("sentry.") && !clean.endsWith(".png") && !clean.endsWith(".jpg")) {
-              emails.push(clean);
-            }
-          }
-          const text = html.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "").replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-          websiteContent += text.substring(0, 2000) + "\n";
+    const scrapeSingleFirm = async (firm: any, index: number): Promise<any> => {
+      const firmName = firm.name || "Unknown";
+      const website = firm.website || "";
+
+      if (!website) {
+        return { ...firm, scrapedContent: "", keywords: [], projects: [], emails: [], scrapingSuccess: false };
+      }
+
+      try {
+        const urlObj = new URL(website);
+        const domain = urlObj.hostname.replace("www.", "").toLowerCase();
+        if (skipDomains.some(sd => domain.includes(sd)) || website.endsWith(".pdf")) {
+          logger?.info(`   ⏭️ [${index + 1}/${firms.length}] ${firmName} — non-scrapable URL, skipping`);
+          return { ...firm, scrapedContent: firm.snippet || "", keywords: [], projects: [], emails: [], scrapingSuccess: false };
         }
-        await new Promise(r => setTimeout(r, 500));
-      } catch { /* page not found or timeout */ }
+      } catch {
+        return { ...firm, scrapedContent: "", keywords: [], projects: [], emails: [], scrapingSuccess: false };
+      }
+
+      logger?.info(`   🌐 [${index + 1}/${firms.length}] Scraping: ${firmName}`);
+
+      try {
+        const baseUrl = website.replace(/\/$/, "");
+        const pagesToTry = [baseUrl, `${baseUrl}/projets`, `${baseUrl}/about`];
+
+        let fullContent = "";
+        const foundEmails: string[] = [];
+        const foundKeywords = new Set<string>();
+        const foundProjects: string[] = [];
+
+        for (const pageUrl of pagesToTry) {
+          try {
+            const response = await fetch(pageUrl, {
+              headers: {
+                "User-Agent": getRandomUA(),
+                "Accept-Language": "fr-FR,fr;q=0.9",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+              },
+              signal: AbortSignal.timeout(6000),
+            });
+
+            if (!response.ok) continue;
+
+            const contentType = response.headers.get("content-type") || "";
+            if (!contentType.includes("text/html") && !contentType.includes("text/plain")) continue;
+
+            const html = await response.text();
+
+            const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+            const emails = html.match(emailRegex) || [];
+            for (const email of emails) {
+              const clean = email.toLowerCase().trim();
+              if (!foundEmails.includes(clean) && !emailExcludes.some(ex => clean.includes(ex)) && !clean.endsWith(".png") && !clean.endsWith(".jpg") && !clean.endsWith(".svg")) {
+                foundEmails.push(clean);
+              }
+            }
+
+            const text = html
+              .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
+              .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+              .replace(/<nav[^>]*>[\s\S]*?<\/nav>/gi, "")
+              .replace(/<footer[^>]*>[\s\S]*?<\/footer>/gi, "")
+              .replace(/<header[^>]*>[\s\S]*?<\/header>/gi, "")
+              .replace(/<[^>]+>/g, " ")
+              .replace(/\s+/g, " ")
+              .trim()
+              .substring(0, 1500);
+
+            fullContent += text + " ";
+
+            ecoKeywords.forEach(kw => {
+              if (text.toLowerCase().includes(kw.toLowerCase())) {
+                foundKeywords.add(kw);
+              }
+            });
+
+            const projectMatches = text.match(/(?:projet|réalisation|project|chantier)\s+([A-ZÀ-Ÿ][a-zà-ÿA-ZÀ-Ÿ\s-]{3,30})/gi);
+            if (projectMatches) {
+              for (const pm of projectMatches.slice(0, 3)) {
+                if (!foundProjects.includes(pm.trim())) foundProjects.push(pm.trim());
+              }
+            }
+
+            await new Promise(r => setTimeout(r, 200));
+          } catch { /* page inaccessible */ }
+        }
+
+        const scrapingSuccess = fullContent.trim().length > 100;
+        logger?.info(`      ✅ ${scrapingSuccess ? "OK" : "PARTIAL"}: ${fullContent.trim().length} chars, ${foundKeywords.size} kw, ${foundEmails.length} emails`);
+
+        return {
+          ...firm,
+          scrapedContent: fullContent.trim().substring(0, 1500),
+          keywords: Array.from(foundKeywords),
+          projects: foundProjects,
+          emails: foundEmails,
+          scrapingSuccess,
+        };
+      } catch (err) {
+        logger?.warn(`      ⚠️ Error: ${err}`);
+        return { ...firm, scrapedContent: firm.snippet || "", keywords: [], projects: [], emails: [], scrapingSuccess: false };
+      }
+    };
+
+    const BATCH_SIZE = 5;
+    for (let batchStart = 0; batchStart < firms.length; batchStart += BATCH_SIZE) {
+      const batch = firms.slice(batchStart, batchStart + BATCH_SIZE);
+      const results = await Promise.all(
+        batch.map((firm, idx) => scrapeSingleFirm(firm, batchStart + idx))
+      );
+      scrapedFirms.push(...results);
+      if (batchStart + BATCH_SIZE < firms.length) {
+        await new Promise(r => setTimeout(r, 300));
+      }
     }
 
-    logger?.info(`✅ [processFirmWebsite] Found ${emails.length} email(s) for ${inputData.firmName}`);
-    return { firmName: inputData.firmName, websiteUrl: inputData.websiteUrl, emails, websiteContent: websiteContent.substring(0, 6000) };
+    const successCount = scrapedFirms.filter(f => f.scrapingSuccess).length;
+    logger?.info(`✅ [scrapeFirmWebsites] Complete: ${successCount}/${firms.length} scraped successfully`);
+
+    return {
+      firmsJson: JSON.stringify(scrapedFirms),
+      scrapedCount: successCount,
+      totalCount: firms.length,
+    };
   },
 });
 

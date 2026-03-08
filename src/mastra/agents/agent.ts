@@ -5,11 +5,11 @@ import {
   searchGooglePlacesTool,
   scrapeGoogleSearchTool,
   extractFromSpecializedSitesTool,
-  processFirmWebsiteTool,
+  scrapeFirmWebsitesTool,
   generateCsvTool,
   sendEmailTool,
 } from "../tools/prospectingTools";
-import { qualifyFirmWithDustAiTool } from "../tools/dustAiTool";
+import { qualifyDustBatchTool } from "../tools/dustAiTool";
 
 const anthropic = createAnthropic({
   baseURL: process.env.AI_INTEGRATIONS_ANTHROPIC_BASE_URL,
@@ -24,9 +24,9 @@ export const automationAgent = new Agent({
 Ta mission est d'orchestrer la découverte et la qualification de cabinets d'architecture spécialisés en construction écologique (BTC, pisé, terre crue, bioclimatique).
 
 Quand on te demande d'exécuter le workflow :
-1. Utilise les outils de recherche pour découvrir des cabinets
-2. Extrais les emails des sites web découverts
-3. Qualifie chaque cabinet via Dust AI (score 1-5)
+1. Utilise les outils de recherche pour découvrir des cabinets (Google Places API, SerpAPI, sites spécialisés)
+2. Scrape en profondeur les sites web découverts (emails, contenu, mots-clés écologiques)
+3. Qualifie tous les cabinets en batch via Dust AI (score 1-5)
 4. Génère un rapport CSV des cabinets qualifiés (score >= 3)
 5. Envoie le rapport par email
 
@@ -49,8 +49,8 @@ Sois méthodique et priorise la qualité des prospects.`,
     searchGooglePlacesTool,
     scrapeGoogleSearchTool,
     extractFromSpecializedSitesTool,
-    processFirmWebsiteTool,
-    qualifyFirmWithDustAiTool,
+    scrapeFirmWebsitesTool,
+    qualifyDustBatchTool,
     generateCsvTool,
     sendEmailTool,
   },

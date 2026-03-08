@@ -5,21 +5,11 @@ import {
   searchGooglePlacesTool,
   scrapeGoogleSearchTool,
   extractFromSpecializedSitesTool,
-  processFirmWebsiteTool,
+  scrapeFirmWebsitesTool,
   generateCsvTool,
   sendEmailTool,
 } from "../tools/prospectingTools";
-import { qualifyFirmWithDustAiTool } from "../tools/dustAiTool";
-
-const firmSchema = z.object({
-  name: z.string(),
-  address: z.string().optional(),
-  phone: z.string().optional(),
-  website: z.string().optional(),
-  snippet: z.string().optional(),
-  description: z.string().optional(),
-  source: z.string(),
-});
+import { qualifyDustBatchTool } from "../tools/dustAiTool";
 
 const initializeDatabase = createStep({
   id: "initialize-database",
@@ -51,7 +41,7 @@ const searchGooglePlaces = createStep({
   }),
   execute: async ({ inputData, mastra }) => {
     const logger = mastra?.getLogger();
-    logger?.info("🔍 [Step 2A] Searching Google Places...");
+    logger?.info("🔍 [Step 2A] Searching Google Places API...");
 
     const result = await searchGooglePlacesTool.execute({ placeholder: "" }, { mastra });
     if ("error" in result && result.error) {
@@ -59,14 +49,14 @@ const searchGooglePlaces = createStep({
       return { allFirmsJson: "[]", googlePlacesCount: 0 };
     }
 
-    logger?.info(`✅ [Step 2A] Found ${result.count} firms from Google Places`);
+    logger?.info(`✅ [Step 2A] Found ${result.count} firms from Google Places API`);
     return { allFirmsJson: JSON.stringify(result.firms), googlePlacesCount: result.count };
   },
 });
 
-const scrapeGoogleSearch = createStep({
-  id: "scrape-google-search",
-  description: "Scrape Google Search with targeted eco-friendly queries",
+const scrapeGoogleSearchSerpAPI = createStep({
+  id: "scrape-google-search-serpapi",
+  description: "Search for eco-focused architecture firms using SerpAPI",
   inputSchema: z.object({
     allFirmsJson: z.string(),
     googlePlacesCount: z.number(),
@@ -74,27 +64,27 @@ const scrapeGoogleSearch = createStep({
   outputSchema: z.object({
     allFirmsJson: z.string(),
     googlePlacesCount: z.number(),
-    googleSearchCount: z.number(),
+    serpApiCount: z.number(),
   }),
   execute: async ({ inputData, mastra }) => {
     const logger = mastra?.getLogger();
-    logger?.info("🔍 [Step 2B] Scraping Google Search with eco queries...");
+    logger?.info("🔍 [Step 2B] Searching SerpAPI with eco queries...");
 
     const result = await scrapeGoogleSearchTool.execute({ placeholder: "" }, { mastra });
     if ("error" in result && result.error) {
       logger?.error(`❌ [Step 2B] Tool error: ${result.message}`);
-      return { ...inputData, googleSearchCount: 0 };
+      return { ...inputData, serpApiCount: 0 };
     }
 
     let existingFirms: any[] = [];
     try { existingFirms = JSON.parse(inputData.allFirmsJson); } catch { existingFirms = []; }
 
     const combined = [...existingFirms, ...result.firms];
-    logger?.info(`✅ [Step 2B] Found ${result.count} firms from Google Search. Total: ${combined.length}`);
+    logger?.info(`✅ [Step 2B] Found ${result.count} firms from SerpAPI. Total: ${combined.length}`);
     return {
       allFirmsJson: JSON.stringify(combined),
       googlePlacesCount: inputData.googlePlacesCount,
-      googleSearchCount: result.count,
+      serpApiCount: result.count,
     };
   },
 });
@@ -105,12 +95,12 @@ const scrapeSpecializedSites = createStep({
   inputSchema: z.object({
     allFirmsJson: z.string(),
     googlePlacesCount: z.number(),
-    googleSearchCount: z.number(),
+    serpApiCount: z.number(),
   }),
   outputSchema: z.object({
     allFirmsJson: z.string(),
     googlePlacesCount: z.number(),
-    googleSearchCount: z.number(),
+    serpApiCount: z.number(),
     specializedCount: z.number(),
     totalBeforeDedup: z.number(),
   }),
@@ -135,7 +125,7 @@ const scrapeSpecializedSites = createStep({
     return {
       allFirmsJson: JSON.stringify(combined),
       googlePlacesCount: inputData.googlePlacesCount,
-      googleSearchCount: inputData.googleSearchCount,
+      serpApiCount: inputData.serpApiCount,
       specializedCount: result.count,
       totalBeforeDedup: combined.length,
     };
@@ -144,11 +134,11 @@ const scrapeSpecializedSites = createStep({
 
 const consolidateFirms = createStep({
   id: "consolidate-firms",
-  description: "Deduplicate firms from all sources and prepare for processing",
+  description: "Deduplicate firms from all sources",
   inputSchema: z.object({
     allFirmsJson: z.string(),
     googlePlacesCount: z.number(),
-    googleSearchCount: z.number(),
+    serpApiCount: z.number(),
     specializedCount: z.number(),
     totalBeforeDedup: z.number(),
   }),
@@ -156,8 +146,6 @@ const consolidateFirms = createStep({
     uniqueFirmsJson: z.string(),
     uniqueCount: z.number(),
     totalBeforeDedup: z.number(),
-    processedFirmsJson: z.string(),
-    currentIndex: z.number(),
   }),
   execute: async ({ inputData, mastra }) => {
     const logger = mastra?.getLogger();
@@ -168,117 +156,99 @@ const consolidateFirms = createStep({
 
     const unique = allFirms.reduce((acc: any[], firm: any) => {
       if (!firm.website) { acc.push(firm); return acc; }
-      const normalized = firm.website.toLowerCase().trim();
-      if (!acc.find((f: any) => f.website && f.website.toLowerCase().trim() === normalized)) {
+      try {
+        const domain = new URL(firm.website).hostname.replace("www.", "").toLowerCase();
+        if (!acc.find((f: any) => {
+          if (!f.website) return false;
+          try { return new URL(f.website).hostname.replace("www.", "").toLowerCase() === domain; } catch { return false; }
+        })) {
+          acc.push(firm);
+        }
+      } catch {
         acc.push(firm);
       }
       return acc;
     }, []);
 
-    logger?.info(`📊 [Step 3] Sources: Places=${inputData.googlePlacesCount}, Search=${inputData.googleSearchCount}, Specialized=${inputData.specializedCount}`);
+    logger?.info(`📊 [Step 3] Sources: Places=${inputData.googlePlacesCount}, SerpAPI=${inputData.serpApiCount}, Specialized=${inputData.specializedCount}`);
     logger?.info(`📊 [Step 3] Before dedup: ${inputData.totalBeforeDedup}, After: ${unique.length}`);
 
     return {
       uniqueFirmsJson: JSON.stringify(unique),
       uniqueCount: unique.length,
       totalBeforeDedup: inputData.totalBeforeDedup,
-      processedFirmsJson: "[]",
-      currentIndex: 0,
     };
   },
 });
 
-const processArchitectureFirm = createStep({
-  id: "process-architecture-firm",
-  description: "Extract emails, qualify with Dust AI, and store each firm",
+const scrapeAndQualify = createStep({
+  id: "scrape-and-qualify",
+  description: "Deep scrape all firm websites then batch qualify with Dust AI in a single step",
   inputSchema: z.object({
     uniqueFirmsJson: z.string(),
     uniqueCount: z.number(),
     totalBeforeDedup: z.number(),
-    processedFirmsJson: z.string(),
-    currentIndex: z.number(),
   }),
   outputSchema: z.object({
-    processedFirmsJson: z.string(),
-    processedCount: z.number(),
+    qualifiedFirmsJson: z.string(),
+    qualifiedCount: z.number(),
+    totalCount: z.number(),
     totalBeforeDedup: z.number(),
   }),
   execute: async ({ inputData, mastra }) => {
     const logger = mastra?.getLogger();
-    logger?.info("🏢 [Step 4] Processing architecture firms...");
 
-    let firms: any[] = [];
-    try { firms = JSON.parse(inputData.uniqueFirmsJson); } catch { firms = []; }
+    logger?.info(`🌐 [Step 4] Deep scraping ${inputData.uniqueCount} firm websites...`);
+    const scrapeResult = await scrapeFirmWebsitesTool.execute(
+      { firmsJson: inputData.uniqueFirmsJson }, { mastra }
+    );
 
-    const processedFirms: any[] = [];
-
-    for (let i = 0; i < firms.length; i++) {
-      const firm = firms[i];
-      const firmName = firm.name || "Unknown";
-      const websiteUrl = firm.website || "";
-
-      logger?.info(`\n🏢 [Step 4] Processing ${i + 1}/${firms.length}: ${firmName}`);
-
-      if (!websiteUrl) {
-        logger?.info(`   ⚠️ No website, skipping`);
-        processedFirms.push({
-          firmName, websiteUrl: "N/A", emails: [], source: firm.source || "",
-          score: 1, pertinent: false, raison: "No website available",
-          projet_recent: null, typologies: [], langue: "fr",
-        });
-        continue;
-      }
-
-      logger?.info(`   📧 Extracting emails from ${websiteUrl}...`);
-      const websiteResult = await processFirmWebsiteTool.execute(
-        { firmName, websiteUrl }, { mastra }
-      );
-
-      let emails: string[] = [];
-      let websiteContent = "";
-      if (!("error" in websiteResult && websiteResult.error)) {
-        emails = websiteResult.emails;
-        websiteContent = websiteResult.websiteContent;
-      }
-      logger?.info(`   Found ${emails.length} email(s)`);
-
-      logger?.info(`   🤖 Qualifying with Dust AI...`);
-      if (i > 0) {
-        logger?.info(`   ⏳ Waiting 5s before Dust API call (rate limit)...`);
-        await new Promise(r => setTimeout(r, 5000));
-      }
-      const qualResult = await qualifyFirmWithDustAiTool.execute(
-        {
-          firmName,
-          websiteUrl,
-          websiteContent,
-          emails: JSON.stringify(emails),
-          source: firm.source || "",
-        },
-        { mastra }
-      );
-
-      if (!("error" in qualResult && qualResult.error)) {
-        const icon = qualResult.pertinent ? "✅" : "❌";
-        logger?.info(`   ${icon} Score: ${qualResult.score}/5, Qualified: ${qualResult.pertinent}`);
-        processedFirms.push(qualResult);
-      } else {
-        logger?.warn(`   ⚠️ Qualification failed for ${firmName}`);
-        processedFirms.push({
-          firmName, websiteUrl, emails, source: firm.source || "",
-          score: 1, pertinent: false, raison: "Qualification failed",
-          projet_recent: null, typologies: [], langue: "fr",
-        });
-      }
+    let scrapedFirmsJson = inputData.uniqueFirmsJson;
+    if (!("error" in scrapeResult && scrapeResult.error)) {
+      scrapedFirmsJson = scrapeResult.firmsJson;
+      logger?.info(`✅ [Step 4] Scraped ${scrapeResult.scrapedCount}/${scrapeResult.totalCount} websites successfully`);
+    } else {
+      logger?.warn(`⚠️ [Step 4] Scraping error, proceeding with raw data`);
     }
 
-    logger?.info(`\n✅ [Step 4] Processed ${processedFirms.length} firms`);
-    const qualified = processedFirms.filter(f => f.pertinent);
-    logger?.info(`   Qualified (score >= 3): ${qualified.length}/${processedFirms.length}`);
+    logger?.info(`🤖 [Step 5] Batch qualifying ${inputData.uniqueCount} firms with Dust AI...`);
+    const dustResult = await qualifyDustBatchTool.execute(
+      { firmsJson: scrapedFirmsJson }, { mastra }
+    );
+
+    if ("error" in dustResult && dustResult.error) {
+      logger?.error(`❌ [Step 5] Dust batch error: ${dustResult.message}`);
+      return {
+        qualifiedFirmsJson: scrapedFirmsJson,
+        qualifiedCount: 0,
+        totalCount: inputData.uniqueCount,
+        totalBeforeDedup: inputData.totalBeforeDedup,
+      };
+    }
+
+    logger?.info(`✅ [Step 5] Qualified: ${dustResult.qualifiedCount}/${dustResult.totalCount} (score >= 3)`);
+
+    let qualifiedFirms: any[] = [];
+    try { qualifiedFirms = JSON.parse(dustResult.firmsJson); } catch { qualifiedFirms = []; }
+    const compactFirms = qualifiedFirms.map((f: any) => ({
+      firmName: f.firmName || f.name || "Unknown",
+      name: f.name || f.firmName || "Unknown",
+      websiteUrl: f.websiteUrl || f.website || "",
+      website: f.website || f.websiteUrl || "",
+      emails: f.emails || [],
+      source: f.source || "",
+      score: f.score || 1,
+      pertinent: f.pertinent || false,
+      raison: f.raison || "",
+      projet_recent: f.projet_recent || null,
+      typologies: f.typologies || [],
+      langue: f.langue || "fr",
+    }));
 
     return {
-      processedFirmsJson: JSON.stringify(processedFirms),
-      processedCount: processedFirms.length,
+      qualifiedFirmsJson: JSON.stringify(compactFirms),
+      qualifiedCount: dustResult.qualifiedCount,
+      totalCount: dustResult.totalCount,
       totalBeforeDedup: inputData.totalBeforeDedup,
     };
   },
@@ -288,8 +258,9 @@ const generateCsvReport = createStep({
   id: "generate-csv-report",
   description: "Generate CSV report of qualified prospects (score >= 3)",
   inputSchema: z.object({
-    processedFirmsJson: z.string(),
-    processedCount: z.number(),
+    qualifiedFirmsJson: z.string(),
+    qualifiedCount: z.number(),
+    totalCount: z.number(),
     totalBeforeDedup: z.number(),
   }),
   outputSchema: z.object({
@@ -301,21 +272,21 @@ const generateCsvReport = createStep({
   }),
   execute: async ({ inputData, mastra }) => {
     const logger = mastra?.getLogger();
-    logger?.info("📊 [Step 5] Generating CSV report...");
+    logger?.info("📊 [Step 6] Generating CSV report...");
 
     const result = await generateCsvTool.execute(
-      { firmsJson: inputData.processedFirmsJson }, { mastra }
+      { firmsJson: inputData.qualifiedFirmsJson }, { mastra }
     );
 
     if ("error" in result && result.error) {
-      logger?.error(`❌ [Step 5] CSV generation failed: ${result.message}`);
+      logger?.error(`❌ [Step 6] CSV generation failed: ${result.message}`);
       return {
         csvContent: "", csvPath: "", totalCount: 0, qualifiedCount: 0,
         totalBeforeDedup: inputData.totalBeforeDedup,
       };
     }
 
-    logger?.info(`✅ [Step 5] CSV generated: ${result.csvPath}`);
+    logger?.info(`✅ [Step 6] CSV generated: ${result.csvPath}`);
     logger?.info(`   Total: ${result.totalCount}, Qualified: ${result.qualifiedCount}`);
 
     return {
@@ -346,7 +317,7 @@ const sendEmailSummary = createStep({
   }),
   execute: async ({ inputData, mastra }) => {
     const logger = mastra?.getLogger();
-    logger?.info("📬 [Step 6] Sending email summary...");
+    logger?.info("📬 [Step 7] Sending email summary...");
 
     const qualRate = inputData.totalCount > 0
       ? Math.round((inputData.qualifiedCount / inputData.totalCount) * 100)
@@ -379,11 +350,11 @@ CSV: ${inputData.csvPath}`;
     );
 
     if ("error" in result && result.error) {
-      logger?.error(`❌ [Step 6] Email failed: ${result.message}`);
+      logger?.error(`❌ [Step 7] Email failed: ${result.message}`);
       return { sent: false, recipient: "michael@filtreplante.com", summary: summaryText, messageId: undefined };
     }
 
-    logger?.info(`✅ [Step 6] Email sent to ${result.recipient}`);
+    logger?.info(`✅ [Step 7] Email sent to ${result.recipient}`);
     return { sent: result.sent, recipient: result.recipient, summary: summaryText, messageId: result.messageId };
   },
 });
@@ -400,10 +371,10 @@ export const automationWorkflow = createWorkflow({
 })
   .then(initializeDatabase as any)
   .then(searchGooglePlaces as any)
-  .then(scrapeGoogleSearch as any)
+  .then(scrapeGoogleSearchSerpAPI as any)
   .then(scrapeSpecializedSites as any)
   .then(consolidateFirms as any)
-  .then(processArchitectureFirm as any)
+  .then(scrapeAndQualify as any)
   .then(generateCsvReport as any)
   .then(sendEmailSummary as any)
   .commit();
