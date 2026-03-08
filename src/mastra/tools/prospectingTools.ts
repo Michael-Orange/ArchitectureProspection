@@ -1,6 +1,22 @@
 import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
 
+const USER_AGENTS = [
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15",
+];
+
+function getRandomUA(): string {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
+
+async function randomDelay(minMs: number, maxMs: number): Promise<void> {
+  const delay = minMs + Math.random() * (maxMs - minMs);
+  await new Promise(r => setTimeout(r, delay));
+}
+
 export const searchGooglePlacesTool = createTool({
   id: "search-google-places",
   description: "Search Google Places API for architecture firms in Senegal",
@@ -21,12 +37,10 @@ export const searchGooglePlacesTool = createTool({
     const logger = context?.mastra?.getLogger();
     logger?.info("🔍 [searchGooglePlaces] Searching for architecture firms in Senegal...");
 
-    const cities = ["Dakar", "Thiès", "Saint-Louis", "Kaolack", "Ziguinchor"];
+    const cities = ["Dakar", "Thiès", "Saint-Louis"];
     const queries = [
-      "cabinet d'architecture",
-      "architecte",
-      "bureau d'études architecture",
-      "architecture écologique",
+      "cabinet architecture écologique",
+      "architecte durable bioclimatique",
     ];
 
     const firms: Array<{name: string; address?: string; phone?: string; website?: string; source: string}> = [];
@@ -37,10 +51,13 @@ export const searchGooglePlacesTool = createTool({
           const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query + " " + city + " Sénégal")}&num=10&hl=fr`;
           logger?.info(`🔍 [searchGooglePlaces] Searching: ${query} in ${city}`);
 
+          const ua = getRandomUA();
+          logger?.info(`   🔄 Using UA: ${ua.substring(0, 40)}...`);
           const response = await fetch(searchUrl, {
             headers: {
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+              "User-Agent": ua,
               "Accept-Language": "fr-FR,fr;q=0.9",
+              "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             },
           });
 
@@ -66,7 +83,7 @@ export const searchGooglePlacesTool = createTool({
               }
             }
           }
-          await new Promise(r => setTimeout(r, 2000));
+          await randomDelay(10000, 15000);
         } catch (err) {
           logger?.warn(`⚠️ [searchGooglePlaces] Error: ${err}`);
         }
@@ -98,26 +115,27 @@ export const scrapeGoogleSearchTool = createTool({
     logger?.info("🔍 [scrapeGoogleSearch] Scraping with eco queries...");
 
     const ecoQueries = [
-      "architecture écologique Sénégal",
-      "architecture durable Dakar",
-      "éco-construction Sénégal",
-      "architecte bioclimatique Sénégal",
-      "BTC pisé architecture Sénégal",
-      "architecture terre crue Sénégal",
-      "construction durable Afrique de l'Ouest",
+      "cabinet architecture écologique Sénégal",
+      "architecte bioclimatique Dakar Sénégal",
+      "construction BTC pisé terre Sénégal",
+      "éco-construction durable Sénégal",
+      "architecture terre crue Afrique Ouest Sénégal",
     ];
 
     const firms: Array<{name: string; website?: string; snippet?: string; source: string}> = [];
 
     for (const query of ecoQueries) {
       try {
+        const ua = getRandomUA();
         logger?.info(`🔍 [scrapeGoogleSearch] Query: ${query}`);
+        logger?.info(`   🔄 Using UA: ${ua.substring(0, 40)}...`);
         const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&num=10&hl=fr`;
 
         const response = await fetch(searchUrl, {
           headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "User-Agent": ua,
             "Accept-Language": "fr-FR,fr;q=0.9",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
           },
         });
 
@@ -138,7 +156,7 @@ export const scrapeGoogleSearchTool = createTool({
             }
           }
         }
-        await new Promise(r => setTimeout(r, 2000));
+        await randomDelay(10000, 15000);
       } catch (err) {
         logger?.warn(`⚠️ [scrapeGoogleSearch] Error: ${err}`);
       }
@@ -178,16 +196,22 @@ export const extractFromSpecializedSitesTool = createTool({
       { name: "Afrik21", urls: ["https://www.afrik21.africa/tag/construction-durable/"], keywords: ["BTC", "pisé", "terre", "bioclimatique", "Sénégal"] },
     ];
 
+    const slowSites = ["lafargeholcim", "afrik21"];
+
     for (const source of sources) {
       for (const url of source.urls) {
         try {
-          logger?.info(`🌐 [extractSpecializedSites] Fetching: ${url}`);
+          const ua = getRandomUA();
+          const isSlow = slowSites.some(s => url.includes(s));
+          const timeout = isSlow ? 30000 : 15000;
+          logger?.info(`🌐 [extractSpecializedSites] Fetching: ${url} (timeout: ${timeout / 1000}s)`);
           const response = await fetch(url, {
             headers: {
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+              "User-Agent": ua,
               "Accept-Language": "fr-FR,fr;q=0.9",
+              "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             },
-            signal: AbortSignal.timeout(15000),
+            signal: AbortSignal.timeout(timeout),
           });
 
           if (response.ok) {
