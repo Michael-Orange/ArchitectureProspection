@@ -1,0 +1,110 @@
+CORRECTION DU PLAN - Ne lance pas le build précédent
+
+J'ai trouvé une solution gratuite pour Track B : SerpAPI offre 250 recherches/mois gratuites.
+
+NOUVEAU PLAN :
+
+**Track A - Google Places API** (comme prévu dans le plan précédent - OK)
+
+**Track B - NE PAS SUPPRIMER, mais remplacer par SerpAPI** (CORRECTION)
+
+Au lieu de supprimer Track B complètement, réécris `scrapeGoogleSearchTool` pour utiliser SerpAPI :
+
+```typescript
+// Dans src/mastra/tools/prospectingTools.ts
+
+export const scrapeGoogleSearchTool = createTool({
+  id: "scrapeGoogleSearch-serp",
+  description: "Search for eco-focused architecture firms using SerpAPI",
+  inputSchema: z.object({
+    placesCount: z.number().optional(),
+  }),
+  outputSchema: z.object({
+    firms: z.array(z.any()),
+    placesCount: z.number(),
+    searchCount: z.number(),
+  }),
+  execute: async ({ context }) => {
+    const placesCount = context?.placesCount || 0;
+    const firms: any[] = [];
+
+    const ecoQueries = [
+      'architecte "BTC" OR "brique de terre comprimée" Sénégal',
+      'cabinet architecture "pisé" OR "terre crue" Sénégal',
+      'construction "matériaux locaux" OR "bio-sourcés" Sénégal',
+      '"architecture bioclimatique" OR "éco-construction" Sénégal',
+      '"CRAterre" OR "architecture en terre" Sénégal',
+    ];
+
+    for (const query of ecoQueries) {
+      try {
+        const serpUrl = `https://serpapi.com/search.json?q=${encodeURIComponent(query)}&api_key=${process.env.SERPAPI}&num=10`;
+        
+        const response = await fetch(serpUrl);
+        const data = await response.json();
+
+        for (const result of data.organic_results || []) {
+          try {
+            const url = new URL(result.link);
+            const domain = url.hostname.replace('www.', '');
+
+            // Ignorer agrégateurs
+            const excludeDomains = ['wikipedia', 'archdaily', 'pinterest', 'facebook', 'linkedin'];
+            if (excludeDomains.some(d => domain.includes(d))) continue;
+
+            firms.push({
+              name: result.title,
+              country: "Sénégal",
+              city: null,
+              address: null,
+              website: result.link,
+              phone: null,
+              source: "SerpAPI Google Search",
+              notes: result.snippet || "",
+              discoveredAt: new Date().toISOString(),
+              status: "new",
+            });
+          } catch (e) {
+            // URL invalide, skip
+          }
+        }
+
+        await new Promise(r => setTimeout(r, 1000)); // 1s pause entre requêtes
+      } catch (error) {
+        console.error(`SerpAPI error for query "${query}":`, error);
+      }
+    }
+
+    // Déduplication par domaine
+    const seen = new Set();
+    const uniqueFirms = firms.filter(f => {
+      if (!f.website) return false;
+      const domain = new URL(f.website).hostname;
+      if (seen.has(domain)) return false;
+      seen.add(domain);
+      return true;
+    });
+
+    console.log(`SerpAPI: Found ${uniqueFirms.length} unique firms`);
+
+    return {
+      firms: uniqueFirms,
+      placesCount,
+      searchCount: uniqueFirms.length,
+    };
+  },
+});
+Track C - Sites spécialisés (garder tel quel - OK)
+SECRET NÉCESSAIRE :
+SERPAPI (déjà ajouté dans Secrets Replit ✅)
+GOOGLE_PLACES_API_KEY (déjà ajouté ✅)
+WORKFLOW FINAL :
+Track A (Google Places API) → 15-25 cabinets
+Track B (SerpAPI) → 10-15 cabinets
+Track C (sites spécialisés) → 5-10 cabinets
+Consolidation + déduplication
+Scraping sites web
+Qualification Dust
+Export CSV + email
+RÉSULTAT ATTENDU : 30-50 prospects qualifiés par run, 100% gratuit.
+Annule le plan précédent (suppression Track B) et implémente ce nouveau plan avec Track A + B + C
